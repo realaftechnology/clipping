@@ -87,6 +87,33 @@ def learning(c, eid, days=14):
     return {'days': days, 'made': made, 'held': held, 'approved': ok, 'rejected': no, 'rules': rules}
 
 
+def x_chain(c, days=14):
+    """The X branch: the chief of staff (Grok Bot) posts each new source clip to Real AF's X account in full with its own
+    caption, then adds the clip's file name to posted_to_x.txt in the Drive archive (Matt, 2026-11-24: "that is technically
+    part of the process"). Stalled = new source clips waiting and nothing recorded for 2 days."""
+    acct = fw.CFG.get('x_account') or {}
+    try:
+        posted = fw.x_posted()
+        p = os.path.join(os.path.expanduser(fw.CFG.get('archive_root', '')), 'posted_to_x.txt')
+        updated = os.path.getmtime(p)
+    except OSError as ex:
+        return {'handle': acct.get('handle'), 'status': 'stalled', 'issue': f'posted_to_x.txt unreadable: {ex}'[:200]}
+    now = time.time()
+    recent = c.execute("SELECT path, mtime FROM raw_clips WHERE origin='new' AND mtime>?", (now - days * 86400,)).fetchall()
+    waiting = [r for r in recent if os.path.basename(r['path']) not in posted]
+    oldest = max(((now - r['mtime']) / 86400 for r in waiting), default=0)
+    out = {'handle': acct.get('handle'), 'by': 'Grok Bot', 'posted': len(posted), 'posted_recent': len(recent) - len(waiting),
+           'waiting': len(waiting), 'oldest_wait_days': round(oldest, 1), 'last_update': updated if posted else None, 'issue': None}
+    if not posted:
+        out['status'] = 'not_reporting'
+    elif waiting and oldest > 2 and now - updated > 2 * 86400:
+        out['status'] = 'stalled'
+        out['issue'] = f"{len(waiting)} source clips waiting for X; nothing recorded for {(now - updated) / 86400:.0f} days"
+    else:
+        out['status'] = 'ok'
+    return out
+
+
 def sourcing(c):
     """The sourcing agent: episodes it has gone through, moments it pulled, and the ones waiting for a human."""
     src.db()  # creates its tables on first use
@@ -98,7 +125,7 @@ def sourcing(c):
             for r in c.execute("SELECT s.*, e.title FROM sourced s JOIN episodes e ON e.id=s.episode_id WHERE s.status='held' "
                                "ORDER BY s.episode_id DESC, s.confidence DESC, s.id")]
     used = c.execute("SELECT COUNT(DISTINCT e.raw_id) FROM edits e JOIN raw_clips r ON r.id=e.raw_id JOIN sourced s ON s.path=r.path").fetchone()[0]
-    return {'auto_approve': src.S['auto_approve'], 'enabled': src.S['enabled'] and bool(fw.CFG.get('episodes_folder_id')),
+    return {'x': x_chain(c), 'auto_approve': src.S['auto_approve'], 'enabled': src.S['enabled'] and bool(fw.CFG.get('episodes_folder_id')),
             'episodes_done': c.execute("SELECT COUNT(*) FROM episodes WHERE status='done'").fetchone()[0],
             'working': next((e['title'] for e in eps if e['status'] == 'processing' and time.time() - (e['started'] or 0) < 3 * 3600), None),
             'failed': next((f"{e['title']}: {e['note']}" for e in eps if e['status'] == 'failed'), None),

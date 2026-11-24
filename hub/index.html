@@ -217,7 +217,7 @@ async function load() {
     meta: `${r.episode} · ${mins(r.duration)} · ${r.confidence}/10`, has_video: r.has_video, pending: r.pending})));
   if (first && D.brand_sets.length) { open.add(D.brand_sets[0].id); first = false; }
   top_(); ticker();
-  const s = JSON.stringify([D.brand_sets, D.posts.map(p => p.platforms.map(x => x.views)), D.sourcing && [D.sourcing.held, D.sourcing.supplied, D.sourcing.working, D.sourcing.failed]]);
+  const s = JSON.stringify([D.brand_sets, D.posts.map(p => p.platforms.map(x => x.views)), D.sourcing && [D.sourcing.held, D.sourcing.supplied, D.sourcing.working, D.sourcing.failed, D.sourcing.x]]);
   if (s !== sig) { sig = s; draw(); }  // redraw only when something changed, so the web keeps flowing
   if (sheetFor && !document.querySelector('.whyf')) sheetFor();  // don't wipe a half-written reason
 }
@@ -329,6 +329,34 @@ function draw() {
     <text class="sub" x="${CX}" y="${CY + 16}" font-size="9" letter-spacing=".1em" ${SO.working ? `style="fill:${cS}"` : ''}>${SO.working ? 'WORKING' : `${SO.supplied} SUPPLIED`}</text>
     ${SO.held ? `<g onclick="event.stopPropagation();showSourcing('review')"><circle cx="${CX + 42}" cy="${CY - 42}" r="14" fill="var(--flag)"/><text x="${CX + 42}" y="${CY - 38}" text-anchor="middle" font-size="12" font-weight="700" fill="#111">${SO.held}</text></g>` : ''}
   </g>`;
+  // the X branch: the chief of staff (Grok Bot) posts every new source clip to Real AF's X account in full, with its own
+  // caption (Matt, 2026-11-24: "that is technically part of the process"). Drawn between editor slots, opposite Editor 01.
+  const X = SO.x;
+  if (X) {
+    const xa = START() + 180 + 18, [gx, gy] = pol(330, xa), [xx, xy] = pol(470, xa);
+    const xBad = X.status === 'stalled', quiet = X.status === 'not_reporting', cX = xBad ? 'var(--bad)' : quiet ? 'var(--muted)' : 'var(--s1)';
+    const dash = quiet ? 'stroke-dasharray="4 6"' : '';
+    lines.push(`<path id="xg" d="M${CX},${CY} L${gx},${gy}" stroke="${cX}" stroke-opacity=".55" stroke-width="1.5" fill="none" ${dash}/>`);
+    lines.push(`<path id="xx" d="M${gx},${gy} L${xx},${xy}" stroke="${cX}" stroke-opacity=".6" stroke-width="1.5" fill="none" ${dash}/>`);
+    if (!quiet) { edges.push({id: 'xg', w: 0.3 + Math.min(1.2, X.posted_recent / 8), c: cX}); edges.push({id: 'xx', w: 0.3 + Math.min(1.2, X.posted_recent / 8), c: cX}); }
+    const state = xBad ? `<span style="color:var(--bad)">${esc(X.issue || 'stalled')}</span>` : quiet ? 'Not reporting yet: no X posts recorded' : `${+X.posted_recent} new clips posted · ${+X.waiting} waiting`;
+    const tipG = `<b>Chief of Staff</b> · ${esc(X.by || 'Grok Bot')}<br>Posts every source clip to X in full<br>${state}<br><span style="color:var(--muted)">Tap for details</span>`;
+    const tipX = `<b>X</b> · Real AF${X.handle ? ' ' + esc('@' + X.handle.replace(/^@/, '')) : ''}<br>${state}${X.handle ? '<br><span style="color:var(--muted)">Open profile ↗</span>' : ''}`;
+    const xh = safeHandle(X.handle), xgo = xh ? `window.open('https://x.com/${xh}','_blank','noopener')` : 'showX()';
+    g += `<g class="node grow" tabindex="0" role="button" aria-label="Chief of Staff" onclick="showX()" onkeydown="if(event.key==='Enter')showX()"
+        data-tip="${esc(tipG)}" onmousemove="tipShow(event,this.dataset.tip)" onmouseleave="tipHide()" style="color:${cX}">
+      <circle cx="${gx}" cy="${gy}" r="62" fill="url(#halo)" class="${quiet ? '' : 'breathe'} ${xBad ? 'alarm' : ''}"/>
+      <circle cx="${gx}" cy="${gy}" r="36" fill="var(--node)" stroke="${cX}" stroke-width="2" ${quiet ? 'stroke-dasharray="3 4"' : ''} class="ring ${xBad ? 'alarm-ring' : ''}"/>
+      <text class="lbl" x="${gx}" y="${gy - 2}" font-size="11">Chief of</text><text class="lbl" x="${gx}" y="${gy + 11}" font-size="11">Staff</text>
+    </g>
+    <g class="node grow" tabindex="0" role="link" aria-label="Real AF on X" onclick="${xgo}" onkeydown="if(event.key==='Enter')${xgo}"
+        data-tip="${esc(tipX)}" onmousemove="tipShow(event,this.dataset.tip)" onmouseleave="tipHide()" style="color:${cX};animation-delay:.15s">
+      <circle cx="${xx}" cy="${xy}" r="46" fill="url(#halo)" class="${xBad ? 'breathe alarm' : ''}"/>
+      <circle cx="${xx}" cy="${xy}" r="27" fill="var(--node)" stroke="${cX}" stroke-width="2" ${quiet ? 'stroke-dasharray="3 4"' : ''} class="ring ${xBad ? 'alarm-ring' : ''}"/>
+      <text class="lbl" x="${xx}" y="${xy + 5}" font-size="14">X</text>
+      <text class="sub" x="${xx}" y="${xy + 45}" font-size="11">Real AF</text>
+    </g>`;
+  }
   g += '</g></svg>';
   const st = document.getElementById('stage');
   st.innerHTML = g;
@@ -468,6 +496,19 @@ function showSet(id, tab = 'overview') {
     <div class="sec">Recent</div><div class="plist">${posts.map(p => { const v = p.platforms.reduce((a, x) => a + (x.views || 0), 0), u = safeUrl((p.platforms.find(x => x.url) || {}).url);
       const lf = p.lift != null ? `<span class="lift ${p.lift < 1 ? 'low' : ''}">${p.lift}× usual</span>` : '';
       return u ? `<a href="${esc(u)}" target="_blank" rel="noopener"><span class="h">${esc(p.hook)}</span><span class="v">${fmt(v)}${lf}</span></a>` : `<div class="p"><span class="h">${esc(p.hook)}</span><span class="v">${fmt(v)}</span></div>`; }).join('') || '<div class="p">Nothing yet</div>'}</div>`, () => showSet(id, 'overview'));
+}
+
+function showX() {
+  const X = (D.sourcing || {}).x; if (!X) return;
+  const t = x => x ? new Date(x * 1000).toLocaleString([], {weekday: 'short', hour: 'numeric', minute: '2-digit'}) : '–';
+  sheet(`<h3><span style="width:10px;height:10px;border-radius:50%;background:var(--s1);display:inline-block;flex:none"></span>Chief of Staff → X</h3>
+    ${X.status === 'stalled' ? `<div class="issue"><b>Stalled</b> · ${esc(X.issue)}</div>` : ''}
+    <div class="chips"><span class="chip">${esc(X.by || 'Grok Bot')}</span><span class="chip">X · Real AF${X.handle ? ' @' + esc(X.handle.replace(/^@/, '')) : ''}</span>
+      <span class="chip">${X.status === 'ok' ? 'Running' : X.status === 'stalled' ? 'Stalled' : 'Not reporting yet'}</span></div>
+    <div style="color:var(--text-2);font-size:13px">The chief of staff posts every new source clip to Real AF's X account in full, with its own caption, and records each one in <i>posted_to_x.txt</i> in the Drive archive. A source clip leaves the Mac only once it's on X and no editor needs it.</div>
+    <div class="nums" style="margin-top:12px"><div><b>${+X.posted_recent}</b><span>new clips on X</span></div><div><b>${+X.waiting}</b><span>waiting</span></div><div><b>${+X.posted}</b><span>recorded in all</span></div></div>
+    <div class="sec">Last recorded</div><div style="margin-top:6px">${t(X.last_update)}</div>
+    ${X.status === 'not_reporting' ? '<div class="done">Nothing recorded yet. Once the chief of staff adds a line to posted_to_x.txt for each clip it posts, this branch shows live and turns red if it stalls for 2 days.</div>' : ''}`, () => showX());
 }
 
 function showSourcing(tab = 'overview') {

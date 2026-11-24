@@ -117,7 +117,13 @@ def snapshot(snap):
     src = None
     so_ = snap.get('sourcing')
     if isinstance(so_, dict):
-        src = {'auto_approve': b(so_.get('auto_approve')), 'enabled': b(so_.get('enabled')), 'episodes_done': i(so_.get('episodes_done'), 0),
+        x = dct(so_.get('x'))
+        h = x.get('handle')
+        src = {'x': {'handle': h if isinstance(h, str) and HANDLE.match(h) else None, 'by': s(x.get('by'), 40),
+                     'status': x.get('status') if x.get('status') in ('ok', 'stalled', 'not_reporting') else 'not_reporting',
+                     'issue': so(x.get('issue'), 200), 'last_update': t(x.get('last_update')),
+                     **{k: i(x.get(k), 0) for k in ('posted', 'posted_recent', 'waiting')}, 'oldest_wait_days': f(x.get('oldest_wait_days')) or 0},
+               'auto_approve': b(so_.get('auto_approve')), 'enabled': b(so_.get('enabled')), 'episodes_done': i(so_.get('episodes_done'), 0),
                'working': so(so_.get('working'), 200), 'failed': so(so_.get('failed'), 300),
                **{k: i(so_.get(k), 0) for k in ('supplied', 'held', 'rejected', 'edited')},
                'episodes': [{'id': i(e.get('id'), 0), 'title': s(e.get('title'), 200), 'episode': so(e.get('episode'), 20), 'show': s(e.get('show'), 40),
