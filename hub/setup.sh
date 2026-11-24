@@ -31,7 +31,8 @@ hub)
   fi
   python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['zernio_api_key'], end='')" "$S" \
     | railway variables --service hub --set-from-stdin ZERNIO_API_KEY --skip-deploys >/dev/null
-  secret "Paste the Cloudflare tunnel token"
+  secret "Paste the Cloudflare tunnel token (or the whole 'cloudflared tunnel run --token ...' line)"
+  REPLY=${REPLY##* }  # keep just the token if the whole command was pasted
   print -rn -- "$REPLY" | railway variables --service tunnel --set-from-stdin TUNNEL_TOKEN >/dev/null
   (cd gate && print -rn -- "$GATE" | npx wrangler@4 secret put GATE_SECRET >/dev/null)
   unset GATE REPLY
