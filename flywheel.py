@@ -14,7 +14,8 @@ Architecture: Projects/Real AF/Context/Thoughts/2026-11-23 Short-Form Content Fl
   flywheel.py stats             refresh latest post numbers and follower counts for the dashboard
   flywheel.py run               one full unattended pass for every editor (what the scheduler calls)
 Output recipe: Context/AI Editors - Output Spec.md. Editors: editors/<editor>/editor.json + style.json.
-Still to build: learn (weekly playbook update), real posting backend (backends/<name>.py).
+  flywheel.py learn-performance [--force]   rewrite the performance playbook now (runs daily on its own)
+  flywheel.py refs [title]      study new clips in the High Performers folder, then refresh the playbook and content profile
 """
 import csv, shutil, datetime as dt, fcntl, glob, importlib, json, os, re, sqlite3, statistics, subprocess, sys, tempfile, time, traceback
 
@@ -53,6 +54,10 @@ def db():
       id INTEGER PRIMARY KEY, edit_id INTEGER REFERENCES edits(id), editor TEXT, action TEXT, reason TEXT, at REAL);
     CREATE TABLE IF NOT EXISTS rules(
       id INTEGER PRIMARY KEY, kind TEXT, rule TEXT, reason TEXT, source_edit INTEGER, at REAL, active INTEGER DEFAULT 1);
+    CREATE TABLE IF NOT EXISTS refs(
+      id INTEGER PRIMARY KEY, path TEXT UNIQUE, category TEXT, title TEXT, views INTEGER, duration REAL, width INTEGER, height INTEGER,
+      transcript TEXT, analysis TEXT, analyzed_at REAL, added REAL);
+    CREATE TABLE IF NOT EXISTS spread(raw_id INTEGER PRIMARY KEY, from_edit INTEGER, lift REAL, at REAL);
     CREATE TABLE IF NOT EXISTS post_stats(
       post_id INTEGER PRIMARY KEY REFERENCES posts(id), taken_at REAL, views INTEGER, likes INTEGER, comments INTEGER,
       shares INTEGER, saves INTEGER, raw TEXT);
@@ -251,8 +256,7 @@ def decide_prompt(row, prep_row, ed, pool):
     rules = spec[spec.index('## Hook rules'):spec.index('## Choices the editor makes per clip')]
     exclusions = 'FIRST, check the hard exclusions. If any applies, set excluded=true and stop caring about the rest.\n' + \
         spec[spec.index('## Hard exclusions'):spec.index('## Hook rules')]
-    playbook = os.path.join(ed['dir'], 'playbook.md')
-    playbook = open(playbook).read() if os.path.exists(playbook) else '(none yet)'
+    playbook = playbook_for(ed['id'])
     songs_txt = '\n'.join(f"- {r['file']} | {r['song']} | {r['mood']} | energy {r['energy']}" for r in pool)
     q3 = '"' * 3
     return f"""You are {ed['name']}, an AI short-form editor for Andy Frisella's Real AF podcast.
@@ -260,7 +264,7 @@ Natalie (human editor) cut this raw clip. Decide the text hook, the music bed an
 
 {exclusions}
 {rules}
-This editor's playbook (lessons from past posts):
+Performance playbook (what made past clips win or flop, learned from every editor's posts):
 {playbook}
 
 Content profile: what Matt approves and rejects, learned from every review decision. Applies to every editor.
@@ -657,6 +661,10 @@ the decisions; don't invent preferences. Note how many decisions back each line,
 ## Quality standards
 ## Matt's own rules
 
+Matt's saved high performers (clips he keeps as winners, so their content counts as approved; strong evidence for which
+political takes are fine; weight by views, 100k = 1, 1M = 2, 10M = 3):
+{json.dumps([{k: r[k] for k in ('title', 'folder', 'views', 'weight', 'topic', 'take')} for r in refs_for_prompt()])[:15000]}
+
 Current profile:
 {content_profile()}
 
@@ -679,6 +687,265 @@ def learn(edit_id, action):
     lock = open(os.path.join(WORK, '.profile.lock'), 'w')
     fcntl.flock(lock, fcntl.LOCK_EX)
     update_profile()
+
+
+# ---------- learning from performance (Matt, 2026-11-23) ----------
+# "if editor 1 has a video that goes viral and there's a pattern that starts to play out of similar videos going viral
+# and similar videos flopping, then all 9 other editors should also learn from that information without changing their
+# stylistic choices"
+PLAYBOOK = os.path.join(HERE, '..', 'Context', 'AI Editors - Performance Playbook.md')  # private notes, not the public repo
+NETWORK_H, STYLE_H = '## Every editor', '## Style notes: '
+
+
+def read_playbook():
+    """{'network': text, 'style': {editor: text}} from the markdown (Matt can edit it)."""
+    out = {'network': '', 'style': {}}
+    if not os.path.exists(PLAYBOOK):
+        return out
+    cur = None
+    for line in open(PLAYBOOK).read().split('\n'):
+        if line.startswith(NETWORK_H):
+            cur = 'network'
+            continue
+        if line.startswith(STYLE_H):
+            cur = line[len(STYLE_H):].strip()
+            out['style'][cur] = ''
+            continue
+        if line.startswith('# '):
+            cur = None
+        elif cur == 'network':  # '###' (and stray '##') sub-headings stay inside their section
+            out['network'] += line + '\n'
+        elif cur:
+            out['style'][cur] += line + '\n'
+    return out
+
+
+def has_lessons():
+    return bool(re.search(r'^\s*- ', read_playbook()['network'], re.M))
+
+
+def playbook_for(eid):
+    pb = read_playbook()
+    style = pb['style'].get(eid, '').strip()
+    return ((pb['network'].strip() or '(no lessons yet)') +
+            (f"\n\nYour own style notes (music and look only; never change your style because of another editor's):\n{style}" if style else ''))
+
+
+def perf_rows(c):
+    """One row per posted edit with its views relative to that account's usual (lift), plus what the clip was."""
+    now = time.time()
+    posts = c.execute("SELECT p.id, p.edit_id, p.editor, p.platform, p.account, p.posted_at, s.views, s.likes, s.comments, s.shares, s.saves "
+                      "FROM posts p JOIN post_stats s ON s.post_id=p.id WHERE p.status='posted' AND s.views IS NOT NULL").fetchall()
+    base = {}
+    for p in posts:
+        if now - p['posted_at'] > 48 * 3600:
+            base.setdefault(p['account'], []).append(p['views'])
+    med = {a: max(1, statistics.median(v)) for a, v in base.items()}
+    by_edit = {}
+    for p in posts:
+        g = by_edit.setdefault(p['edit_id'], {'edit_id': p['edit_id'], 'editor': p['editor'], 'posted_at': p['posted_at'], 'platforms': {}})
+        g['platforms'][p['platform']] = {k: p[k] for k in ('views', 'likes', 'comments', 'shares', 'saves')}
+        if p['account'] in med:
+            g['platforms'][p['platform']]['lift'] = round(p['views'] / med[p['account']], 2)
+    out = []
+    for eid, g in by_edit.items():
+        e = c.execute("SELECT e.hook, e.song, e.decision, r.folder, r.subject, r.mtime, pr.duration, pr.transcript FROM edits e "
+                      "JOIN raw_clips r ON r.id=e.raw_id LEFT JOIN preps pr ON pr.raw_id=e.raw_id WHERE e.id=?", (eid,)).fetchone()
+        lifts = [x['lift'] for x in g['platforms'].values() if 'lift' in x]
+        d = json.loads(e['decision'] or '{}')
+        out.append({**g, 'lift': round(statistics.mean(lifts), 2) if lifts else None, 'age_h': round((now - g['posted_at']) / 3600),
+                    'hook': e['hook'], 'song': e['song'], 'mood': d.get('mood'), 'folder': e['folder'], 'subject': e['subject'],
+                    'duration': round(e['duration'] or 0), 'posted': dt.datetime.fromtimestamp(g['posted_at']).strftime('%a %H:%M'),
+                    'kind': 'fresh' if g['posted_at'] - (e['mtime'] or 0) < CFG.get('fresh_days', 7) * 86400 else 'evergreen',
+                    'transcript': (e['transcript'] or '')[:500]})
+    return out
+
+
+PERF_SCHEMA = {'type': 'object', 'additionalProperties': False, 'required': ['network', 'style', 'spread', 'changed'], 'properties': {
+    'network': {'type': 'string'},
+    'style': {'type': 'array', 'items': {'type': 'object', 'additionalProperties': False, 'required': ['editor', 'notes'],
+                                         'properties': {'editor': {'type': 'string'}, 'notes': {'type': 'string'}}}},
+    'spread': {'type': 'array', 'items': {'type': 'integer'}},
+    'changed': {'type': 'string'}}}
+
+
+def learn_performance(force=False):
+    """Daily: rewrite the performance playbook from every editor's results."""
+    c = db()
+    rows = perf_rows(c)
+    judged = [r for r in rows if r['lift'] is not None and r['age_h'] >= 48]
+    need = CFG.get('learn_min_posts', 5)
+    stamp = os.path.join(WORK, 'last_learn.json')
+    json.dump({'at': time.time(), 'judged': len(judged)}, open(stamp, 'w'))
+    refs_ = refs_for_prompt()
+    if len(judged) < need and not force and not refs_:
+        if not os.path.exists(PLAYBOOK):
+            open(PLAYBOOK, 'w').write(f"# AI Editors: Performance Playbook\n\nNot enough results yet: lessons start once {need} posts are at least "
+                                      f"2 days old.\n\n{NETWORK_H}\n\n")
+        return log(f'learn: {len(judged)} posts old enough to judge (need {need}); playbook unchanged')
+    styles = {e['id']: json.load(open(os.path.join(e['dir'], 'style.json'))) for e in editors()}
+    prompt = f"""You keep the PERFORMANCE PLAYBOOK for a network of AI short-form editors posting Andy Frisella clips. Each editor
+runs its own brand set of accounts in its own style. Matt (the owner): "if editor 1 has a video that goes viral and
+there's a pattern that starts to play out of similar videos going viral and similar videos flopping, then all 9 other
+editors should also learn from that information without changing their stylistic choices, like their style."
+
+Below is every post. lift = views divided by that account's usual (median) views, so 1.0 is normal, 3.0 is three times
+normal (a winner), 0.3 is a flop. Judge winners and flops by lift, not raw views. Posts under 48 h old are early: use
+them only as weak signals.
+
+Write:
+- network: lessons for EVERY editor about the content: which topics, takes, kinds of moments, hook patterns, spoken
+  openings, clip lengths, fresh vs archive clips and posting times win or flop. Markdown bullets. Tag each lesson with its
+  evidence: "(seen once)" is a hunch; "(pattern: 3 wins)" is a rule. Never turn one viral post into a rule. Keep lessons
+  that still hold; drop ones the data now contradicts. Never contradict Matt's written rules (hook rules, hard
+  exclusions, content profile): performance can't make a rejected kind of clip acceptable. Under about 400 words.
+  Use '###' for any sub-headings (never '#' or '##').
+- style: per editor, bullets only about music and look that its own results support (style is per editor and is never
+  copied from another editor). Empty string when there's nothing yet.
+- spread: edit ids of clear winners (lift of 3 or more, at least 48 h old) that other editors should re-cut in their own style.
+- changed: one or two sentences on what changed since the current playbook.
+
+Editors and their styles: {json.dumps({k: {x: v[x] for x in ('caption_font', 'hook_font') if x in v} for k, v in styles.items()})}
+
+Proven high performers: finished clips from Real AF accounts, cut by human editors, with their real view counts (Matt's
+"High Performers" folder). They're strong evidence about CONTENT: topic, take, opening, hook, structure, length. Their
+captions and look come from other editors, so never take style lessons from them. Weight each one by its views (the
+weight field: 100k = 1, 1M = 2, 10M = 3): a lesson from the 12M clip counts for far more than one from a 100k clip, and a
+lesson shared by several big clips is the strongest of all. Tag lessons with the views behind them, e.g.
+"(3 high performers, 15.6M views)", and order lessons by that weight. Where your own posts and these agree, say so; where there are no posts yet, the lessons rest on these.
+{json.dumps(refs_)[:40000] if refs_ else '(none yet)'}
+
+Current playbook:
+{open(PLAYBOOK).read() if os.path.exists(PLAYBOOK) else '(none)'}
+
+Your editors' posts (newest first):
+{json.dumps(sorted(rows, key=lambda r: -r['posted_at']), default=str)[:60000]}"""
+    out = ask_claude(prompt, PERF_SCHEMA)
+    md = [f"# AI Editors: Performance Playbook\n",
+          f"Rewritten daily from every editor's results and the High Performers folder (last {dt.datetime.now():%Y-%m-%d %H:%M}, "
+          f"{len(judged)} posts judged, {len(refs_)} high performers). "
+          f"Content lessons apply to every editor; style notes apply only to their own editor.\n",
+          f"{NETWORK_H}\n", out['network'].strip() + '\n']
+    for st in out['style']:
+        if st['notes'].strip():
+            md += [f"{STYLE_H}{st['editor']}\n", st['notes'].strip() + '\n']
+    open(PLAYBOOK, 'w').write('\n'.join(md))
+    for eid in out['spread']:
+        r = next((x for x in rows if x['edit_id'] == eid), None)
+        raw = c.execute('SELECT raw_id FROM edits WHERE id=?', (eid,)).fetchone()
+        if r and raw:
+            c.execute('INSERT OR IGNORE INTO spread VALUES(?,?,?,?)', (raw[0], eid, r['lift'], time.time()))
+    c.commit()
+    log(f"learn: playbook updated ({len(judged)} posts judged, {len(refs_)} high performers): {out['changed']}")
+
+
+def learn_due():
+    p = os.path.join(WORK, 'last_learn.json')
+    return not os.path.exists(p) or time.time() - json.load(open(p))['at'] > 20 * 3600
+
+
+# ---------- proven winners: Matt's "High Performers" folder ----------
+# Finished clips from Real AF accounts with their view counts in the file name, e.g. "Big Problem (1.6M).mp4".
+# Every editor studies them for content (topic, take, opening, hook, structure); never for style, which stays per editor.
+def parse_views(name):
+    m = re.search(r'\(\s*([\d.]+)\s*([kKmM]?)\s*\+?\s*\)', name)
+    if not m:
+        return None
+    return int(float(m.group(1)) * {'k': 1e3, 'm': 1e6, '': 1}[m.group(2).lower()])
+
+
+def scan_refs():
+    root = os.path.expanduser(CFG.get('references_root', ''))
+    if not root or not os.path.isdir(root):
+        return log(f'refs: no High Performers folder at {root!r}')
+    c, n = db(), 0
+    for dirpath, _, files in os.walk(root):
+        for fn in files:
+            if fn.lower().endswith(('.mp4', '.mov')):
+                path = os.path.join(dirpath, fn)
+                title = re.sub(r'\s*\([^)]*\)\s*$', '', os.path.splitext(fn)[0]).strip()
+                cat = os.path.relpath(dirpath, root).split(os.sep)[0] if dirpath != root else ''
+                cur = c.execute('INSERT OR IGNORE INTO refs(path,category,title,views,added) VALUES(?,?,?,?,?)', (path, cat, title, parse_views(fn), time.time()))
+                n += cur.rowcount
+    c.commit()
+    log(f'refs: {n} new high performers registered')
+
+
+REF_SCHEMA = {'type': 'object', 'additionalProperties': False,
+              'required': ['hook_text', 'captions', 'look', 'topic', 'take', 'opening_line', 'structure', 'why_it_worked', 'lessons'],
+              'properties': {k: {'type': 'string'} for k in ('hook_text', 'captions', 'look', 'topic', 'take', 'opening_line', 'structure', 'why_it_worked')} |
+              {'lessons': {'type': 'array', 'items': {'type': 'string'}}}}
+
+
+def analyze_ref(rid):
+    c = db()
+    r = c.execute('SELECT * FROM refs WHERE id=?', (rid,)).fetchone()
+    work = os.path.join(WORK, 'refs', str(rid))
+    os.makedirs(work, exist_ok=True)
+    clip = os.path.join(work, 'clip' + os.path.splitext(r['path'])[1])
+    if not os.path.exists(clip) or os.path.getsize(clip) != os.path.getsize(r['path']):
+        shutil.copy(r['path'], clip + '.part')
+        if os.path.getsize(clip + '.part') != os.path.getsize(r['path']):
+            raise RuntimeError(f'incomplete copy of {r["path"]}')
+        os.replace(clip + '.part', clip)
+    w, h, _, dur = probe(clip)
+    subprocess.run(['ffmpeg', '-v', 'error', '-y', '-i', clip, '-vn', '-ac', '1', '-ar', '16000', f'{work}/audio.wav'], check=True, stdin=subprocess.DEVNULL)
+    subprocess.run(['whisper-cli', '-m', os.path.expanduser(CFG['whisper_model']), '-f', f'{work}/audio.wav', '-np', '-otxt', '-of', f'{work}/words'],
+                   check=True, capture_output=True, stdin=subprocess.DEVNULL)
+    transcript = open(f'{work}/words.txt').read().strip()
+    frames = []
+    for k, t in enumerate([0.4, 2.0, dur * 0.4, dur * 0.75]):
+        fp = f'{work}/frame{k}.jpg'
+        subprocess.run(['ffmpeg', '-v', 'error', '-y', '-ss', f'{t:.2f}', '-i', clip, '-frames:v', '1', '-vf', 'scale=540:-2', fp], check=True, stdin=subprocess.DEVNULL)
+        frames.append(os.path.basename(fp))
+    prompt = f"""Study a proven short-form clip from a Real AF account (Andy Frisella). It got {r['views']:,} views.
+Title Matt gave it: "{r['title']}" (folder: {r['category']}). {dur:.0f} s, {w}x{h}.
+
+First Read the frames in this folder ({', '.join(frames)}: 0.4 s, 2 s, 40% and 75% through) to see the on-screen hook
+text, captions and look. Then, with the transcript, explain what made it work.
+
+Transcript (auto, may lack punctuation):
+\"\"\"{transcript}\"\"\"
+
+Fields: hook_text (any title/hook text on screen, exactly; "" if none), captions (caption styling), look (framing, crop,
+graphics, anything visual), topic, take (Andy's actual position in one sentence), opening_line (first spoken sentence),
+structure (how the clip builds, e.g. claim > story > payoff), why_it_worked (specific), lessons (3-6 short content
+lessons another editor could apply to a different clip; content only, not visual style)."""
+    cmd = ['claude', '-p', prompt, '--output-format', 'json', '--tools', 'Read', '--allowedTools', 'Read', '--no-session-persistence',
+           '--setting-sources', '', '--json-schema', json.dumps(REF_SCHEMA)]
+    out = json.loads(subprocess.run(cmd, capture_output=True, text=True, cwd=work, timeout=600).stdout or '{}')
+    if out.get('is_error') or 'structured_output' not in out:
+        raise RuntimeError(f"analysis failed: {str(out.get('result'))[:300]}")
+    c.execute('UPDATE refs SET duration=?, width=?, height=?, transcript=?, analysis=?, analyzed_at=? WHERE id=?',
+              (dur, w, h, transcript, json.dumps(out['structured_output']), time.time(), rid))
+    c.commit()
+    os.remove(clip)  # keep the transcript, frames and analysis; the video stays in Drive
+    log(f"refs: analysed \"{r['title']}\" ({r['views']:,} views): {out['structured_output']['why_it_worked'][:140]}")
+
+
+def refs_cmd(only=None):
+    """Register the High Performers folder, analyse what's new, then refresh the playbook and the content profile."""
+    scan_refs()
+    c = db()
+    todo = c.execute('SELECT id, title FROM refs WHERE analyzed_at IS NULL' + (' AND title LIKE ?' if only else '') + ' ORDER BY views DESC',
+                     ((f'%{only}%',) if only else ())).fetchall()
+    for r in todo:
+        try:
+            analyze_ref(r['id'])
+        except Exception as ex:
+            log(f"refs: {r['title']} failed: {ex}")
+    if todo:
+        learn_performance(force=True)
+        update_profile()
+
+
+def refs_for_prompt(limit=60):
+    # Matt: "They should be weighted based on their view counts." weight = log scale: 100k -> 1, 1M -> 2, 10M -> 3
+    import math
+    rows = db().execute('SELECT * FROM refs WHERE analyzed_at IS NOT NULL ORDER BY views DESC LIMIT ?', (limit,)).fetchall()
+    return [{'title': r['title'], 'folder': r['category'], 'views': r['views'],
+             'weight': round(max(0.5, 1 + math.log10(max(r['views'] or 1, 1) / 1e5)), 2), 'seconds': round(r['duration'] or 0),
+             **{k: v for k, v in json.loads(r['analysis']).items() if k not in ('captions', 'look')}} for r in rows]
 
 
 # ---------- queue / post / track ----------
@@ -955,12 +1222,36 @@ def next_fresh(c, eid):
 
 
 def next_evergreen(c, eid):
-    """Archive clip this editor hasn't used, newest first. Other editors may use the same clip, just not on the same
-    day (queue() enforces that); clips another editor currently has lined up go last to avoid clashes."""
-    return c.execute("SELECT r.id FROM raw_clips r WHERE r.mtime<=? AND r.id NOT IN (SELECT raw_id FROM blocked) "
+    """Archive clip this editor hasn't used. Order: another editor's winner (spread), then, once the playbook has
+    lessons, the candidate that best fits them; otherwise newest. Other editors may use the same clip, just not on the
+    same day (queue() enforces that); clips another editor currently has lined up go last to avoid clashes."""
+    rows = c.execute("SELECT r.id, r.folder, r.episode, r.subject, (r.id IN (SELECT raw_id FROM spread)) hot FROM raw_clips r "
+                     "WHERE r.mtime<=? AND r.id NOT IN (SELECT raw_id FROM blocked) "
                      "AND NOT EXISTS (SELECT 1 FROM edits e WHERE e.raw_id=r.id AND e.editor=?) "
-                     "ORDER BY EXISTS (SELECT 1 FROM edits o WHERE o.raw_id=r.id AND o.editor!=? AND o.status IN ('approved','queued')), "
-                     "r.mtime DESC LIMIT 1", (time.time() - CFG.get('fresh_days', 7) * 86400, eid, eid)).fetchone()
+                     "ORDER BY hot DESC, EXISTS (SELECT 1 FROM edits o WHERE o.raw_id=r.id AND o.editor!=? AND o.status IN ('approved','queued')), "
+                     "r.mtime DESC LIMIT 30", (time.time() - CFG.get('fresh_days', 7) * 86400, eid, eid)).fetchall()
+    if not rows:
+        return None
+    if rows[0]['hot'] or not has_lessons():
+        return rows[0]
+    try:
+        pick = ask_claude(f"""Pick the archive clip most likely to perform, judging by the performance playbook below.
+You only have each clip's file subject (Natalie's short title), show folder and episode number. Return its id.
+
+Performance playbook:
+{playbook_for(eid)}
+
+Candidates (id | folder | episode | subject):
+""" + '\n'.join(f"{r['id']} | {r['folder']} | {r['episode']} | {re.sub(r'(?<=[a-z])(?=[A-Z])', ' ', r['subject'] or '')}" for r in rows),
+                          {'type': 'object', 'additionalProperties': False, 'required': ['id', 'why'],
+                           'properties': {'id': {'type': 'integer'}, 'why': {'type': 'string'}}})
+        hit = next((r for r in rows if r['id'] == pick['id']), None)
+        if hit:
+            log(f"{eid} evergreen pick raw {hit['id']} ({hit['subject']}): {pick['why'][:160]}")
+            return hit
+    except Exception as ex:
+        log(f'{eid} evergreen pick fell back to newest: {ex}')
+    return rows[0]
 
 
 def run():
@@ -1001,6 +1292,11 @@ def run():
             step()
         except Exception as ex:
             log(f'{step.__name__} ERROR {ex}\n{traceback.format_exc()}')
+    if learn_due():  # once a day, after fresh stats
+        try:
+            learn_performance()
+        except Exception as ex:
+            log(f'learn ERROR {ex}\n{traceback.format_exc()}')
     json.dump({'started': started, 'finished': time.time()}, open(beat, 'w'))
 
 
@@ -1020,7 +1316,7 @@ def status():
 
 if __name__ == '__main__':
     a = sys.argv[1:] or ['']
-    cmds = {'takedown': lambda: takedown(a[1], ' '.join(a[2:])), 'removed': lambda: removed(a[1]), 'scan': scan, 'status': status, 'accounts': accounts, 'reconcile': reconcile, 'queue': queue, 'post': post, 'track': track, 'stats': stats, 'run': run, 'triage': lambda: triage(int(a[1])), 'learn': lambda: learn(int(a[1]), a[2]), 'profile': update_profile,
+    cmds = {'takedown': lambda: takedown(a[1], ' '.join(a[2:])), 'removed': lambda: removed(a[1]), 'scan': scan, 'status': status, 'accounts': accounts, 'reconcile': reconcile, 'queue': queue, 'post': post, 'track': track, 'stats': stats, 'run': run, 'triage': lambda: triage(int(a[1])), 'learn': lambda: learn(int(a[1]), a[2]), 'profile': update_profile, 'learn-performance': lambda: learn_performance('--force' in a), 'refs': lambda: refs_cmd(a[1] if len(a) > 1 else None),
             'prep': lambda: prep(a[1]), 'render': lambda: render(int(a[1])),
             'approve': lambda: review(int(a[1]), 'approve', ' '.join(a[2:])), 'reject': lambda: review(int(a[1]), 'reject', ' '.join(a[2:])),
             'decide': lambda: decide(int(a[1]), a[2], a[a.index('--manual') + 1] if '--manual' in a else None)}

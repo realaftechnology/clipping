@@ -56,6 +56,12 @@ def editor_issue(eid, lines):
     return errs[-1][20:200] if errs else None
 
 
+def lessons(eid):
+    """The performance playbook as this editor reads it: shared content lessons plus its own style notes."""
+    pb = fw.read_playbook()
+    return {'network': pb['network'].strip(), 'style': pb['style'].get(eid, '').strip()}
+
+
 def scheduled(c, eid):
     """Clips lined up to post: queued with a time, then approved ones waiting for the next free slot."""
     out = []
@@ -126,7 +132,8 @@ def overview():
             'next_post': {'slot': nxt['slot'], 'hook': nxt['hook']} if nxt else None,
             'editor_issue': editor_issue(ed['id'], all_lines[-400:]),
             'learning': learning(c, ed['id']),
-            'scheduled': scheduled(c, ed['id'])})
+            'scheduled': scheduled(c, ed['id']),
+            'lessons': lessons(ed['id'])})
 
     posts = {}
     for r in c.execute("SELECT p.*, e.hook, s.views, s.likes, s.comments, s.shares, s.saves, s.taken_at FROM posts p "
@@ -148,7 +155,11 @@ def overview():
 
     lines = [l for l in all_lines if re.match(r'^\d{4}-\d\d-\d\d ', l)][-25:]
     stats_at = c.execute('SELECT MAX(taken_at) FROM post_stats').fetchone()[0]
-    return {'generated': now, 'last_run': beat, 'health_at': HEALTH['at'], 'health_error': HEALTH['error'], 'stats_at': stats_at, 'brand_sets': sets,
+    lift = {r['edit_id']: r['lift'] for r in fw.perf_rows(c)}
+    for p in posts.values():
+        p['lift'] = lift.get(p['edit_id'])
+    nref = c.execute('SELECT COUNT(*), SUM(views) FROM refs WHERE analyzed_at IS NOT NULL').fetchone()
+    return {'refs': {'count': nref[0], 'views': nref[1] or 0}, 'generated': now, 'last_run': beat, 'health_at': HEALTH['at'], 'health_error': HEALTH['error'], 'stats_at': stats_at, 'brand_sets': sets,
             'posts': list(posts.values())[:50], 'review': review, 'daily': daily, 'log': lines[::-1]}
 
 

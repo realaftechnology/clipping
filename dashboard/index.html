@@ -127,6 +127,10 @@ body { margin: 0; background: radial-gradient(ellipse at 54% 50%, var(--bg-2), v
 .drop[open] summary::after { transform: rotate(180deg); }
 .drop .plist div.p:last-child { border-bottom: 0; }
 .sched { cursor: pointer; }
+.md { font-size: 13px; color: var(--text-2); padding-bottom: 10px; }
+.md h4 { color: var(--text); font-size: 12px; text-transform: uppercase; letter-spacing: .05em; margin: 12px 0 4px; }
+.md ul { margin: 4px 0; padding-left: 18px; } .md li { margin: 4px 0; } .md b { color: var(--text); } .md p { margin: 6px 0; }
+.lift { font-size: 11px; color: var(--live); margin-left: 6px; } .lift.low { color: var(--muted); }
 .sched:hover .h { color: var(--text); text-decoration: underline; }
 .done { font-size: 12px; color: var(--text-2); margin-top: 8px; }
 @media (max-width: 720px) {
@@ -334,7 +338,20 @@ function nextClip(doneId) {
   load();
 }
 // watch a scheduled clip (no decision buttons)
-let schedOpen = false;
+let schedOpen = false, lessOpen = false;
+// tiny markdown: ### headings, - bullets, **bold**, *italic*
+function md(t) {
+  const inl = x => esc(x).replace(/\*\*(.+?)\*\*/g, '<b>$1</b>').replace(/\*(.+?)\*/g, '<i>$1</i>');
+  let out = '', ul = false;
+  t.split('\n').forEach(l => {
+    const b = l.match(/^\s*[-*] (.*)/), h = l.match(/^#{2,4} (.*)/);
+    if (!b && ul) { out += '</ul>'; ul = false; }
+    if (h) out += `<h4>${inl(h[1])}</h4>`;
+    else if (b) { if (!ul) { out += '<ul>'; ul = true; } out += `<li>${inl(b[1])}</li>`; }
+    else if (l.trim()) out += `<p>${inl(l)}</p>`;
+  });
+  return out + (ul ? '</ul>' : '');
+}
 function openClip(id) {
   const x = D.brand_sets.flatMap(b => b.scheduled || []).find(c => c.edit_id === id); if (!x) return;
   document.getElementById('pbox').innerHTML = `<button class="x" onclick="closePlayer()" aria-label="Close">×</button>
@@ -376,9 +393,15 @@ function showSet(id, tab = 'overview') {
         <div class="plist">${S.map(x => `<div class="p sched" role="button" tabindex="0" onclick="openClip(${x.edit_id})" onkeydown="if(event.key==='Enter')openClip(${x.edit_id})">
           <span class="h">${x.has_video ? '▶ ' : ''}${esc(x.hook)}</span><span class="v">${x.slot ? when(x.slot) : 'in line'}${x.platforms.length ? ' · ' + x.platforms.map(p => (PF[p] || [p, p])[1]).join(' ') : ''}</span></div>`).join('')
           || '<div class="p"><span class="h" style="color:var(--text-2)">Nothing scheduled</span></div>'}</div></details>`; })()}
+    ${(() => { const Ls = b.lessons || {}, n = (Ls.network.match(/^\s*- /gm) || []).length;
+      return `<details class="drop" ${lessOpen ? 'open' : ''} ontoggle="lessOpen=this.open"><summary>Lessons <span class="chip">${n}</span></summary>
+        <div class="md">${Ls.network ? md(Ls.network) : '<p style="color:var(--text-2)">No lessons yet.</p>'}
+        ${Ls.style ? `<h4>This editor's style notes</h4>${md(Ls.style)}` : ''}
+        <p style="color:var(--muted);font-size:11px">From every editor's results${D.refs && D.refs.count ? ` and ${D.refs.count} high performers (${fmt(D.refs.views)} views)` : ''}. Content lessons are shared by all editors; style notes are this editor's own.</p></div></details>`; })()}
     <div class="sec">Accounts</div><div class="plist">${accts || '<div class="p">None connected</div>'}</div>
     <div class="sec">Recent</div><div class="plist">${posts.map(p => { const v = p.platforms.reduce((a, x) => a + (x.views || 0), 0), u = (p.platforms.find(x => x.url) || {}).url;
-      return u ? `<a href="${esc(u)}" target="_blank" rel="noopener"><span class="h">${esc(p.hook)}</span><span class="v">${fmt(v)}</span></a>` : `<div class="p"><span class="h">${esc(p.hook)}</span><span class="v">${fmt(v)}</span></div>`; }).join('') || '<div class="p">Nothing yet</div>'}</div>`, () => showSet(id, 'overview'));
+      const lf = p.lift != null ? `<span class="lift ${p.lift < 1 ? 'low' : ''}">${p.lift}× usual</span>` : '';
+      return u ? `<a href="${esc(u)}" target="_blank" rel="noopener"><span class="h">${esc(p.hook)}</span><span class="v">${fmt(v)}${lf}</span></a>` : `<div class="p"><span class="h">${esc(p.hook)}</span><span class="v">${fmt(v)}</span></div>`; }).join('') || '<div class="p">Nothing yet</div>'}</div>`, () => showSet(id, 'overview'));
 }
 
 function showCos() {
