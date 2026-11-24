@@ -185,7 +185,9 @@ def overview():
     for p in posts.values():
         p['lift'] = lift.get(p['edit_id'])
     nref = c.execute('SELECT COUNT(*), SUM(views) FROM refs WHERE analyzed_at IS NOT NULL').fetchone()
-    return {'sourcing': sourcing(c), 'refs': {'count': nref[0], 'views': nref[1] or 0}, 'generated': now, 'last_run': beat, 'health_at': HEALTH['at'], 'health_error': HEALTH['error'], 'stats_at': stats_at, 'brand_sets': sets,
+    ps_path = os.path.join(fw.WORK, 'platform_sync.json')
+    platform_sync = json.load(open(ps_path)) if os.path.exists(ps_path) else {}
+    return {'sourcing': sourcing(c), 'platform_sync': platform_sync, 'refs': {'count': nref[0], 'views': nref[1] or 0}, 'generated': now, 'last_run': beat, 'health_at': HEALTH['at'], 'health_error': HEALTH['error'], 'stats_at': stats_at, 'brand_sets': sets,
             'posts': list(posts.values())[:50], 'review': review, 'daily': daily, 'log': lines[::-1]}
 
 

@@ -162,3 +162,15 @@ def account_health():
         else:
             out[a['accountId']] = None
     return out
+
+
+def nudge_sync():
+    """Ask Zernio to re-pull stale accounts from the platforms (the account-wide analytics read triggers it; per-post reads
+    don't). Returns when Zernio last pulled numbers from the platforms (epoch seconds) or None."""
+    import datetime as _dt
+    _, j = _call('GET', '/analytics', query={'limit': 1})
+    ov = j.get('overview') or {}
+    last = ov.get('lastSync')
+    return {'last_sync': _dt.datetime.fromisoformat(last.replace('Z', '+00:00')).timestamp() if last else None,
+            'stale_accounts': (ov.get('dataStaleness') or {}).get('staleAccountCount'),
+            'sync_triggered': (ov.get('dataStaleness') or {}).get('syncTriggered')}

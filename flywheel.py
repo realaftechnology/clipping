@@ -1285,11 +1285,18 @@ def stats():
     plus one follower count per account per day. At network scale switch posts to Zernio's analytics delta feed."""
     c = db()
     now = time.time()
+    for be in {e['backend'] for e in editors()}:  # get the service to refresh from the platforms, and note how fresh it is
+        fn = getattr(backend(be), 'nudge_sync', None)
+        if fn:
+            try:
+                json.dump({**fn(), 'checked': now}, open(os.path.join(WORK, 'platform_sync.json'), 'w'))
+            except Exception as ex:
+                log(f'stats: sync nudge failed: {ex}')
     rows = c.execute("SELECT p.*, s.taken_at seen FROM posts p LEFT JOIN post_stats s ON s.post_id=p.id "
                      "WHERE p.status='posted' AND p.remote_id IS NOT NULL AND p.posted_at>?", (now - 30 * 86400,)).fetchall()
     groups = {}
     for p in rows:
-        every = 3600 if now - p['posted_at'] < 7 * 86400 else 6 * 3600
+        every = 1500 if now - p['posted_at'] < 7 * 86400 else 6 * 3600  # every pass in the first week
         if not p['seen'] or now - p['seen'] >= every:
             groups.setdefault((p['backend'], p['remote_id']), []).append(p)
     for (be, rid), ps in groups.items():

@@ -150,7 +150,7 @@ body { margin: 0; background: radial-gradient(ellipse at 54% 50%, var(--bg-2), v
 </head>
 <body>
 <div class="top">
-  <div class="brand"><span class="beat" id="beat"></span><span class="t">AI Editor Network</span></div>
+  <div class="brand"><span class="beat" id="beat"></span><span class="t">AI Editor Network</span><span id="asof" style="font-weight:400;font-size:12px;color:var(--muted);margin-left:6px"></span></div>
   <div class="stats" id="stats"></div>
 </div>
 <div id="stage"></div>
@@ -194,6 +194,10 @@ function top_() {
   const r = D.last_run || {}, fin = r.finished || r.started, live = fin && Date.now() / 1000 - fin < 45 * 60;
   const beat = document.getElementById('beat');
   beat.className = 'beat' + (live ? ' on' : ''); beat.title = fin ? `Last run ${ago(fin)}` : 'Not running';
+  // how old the platform numbers really are (when Zernio last pulled from TikTok/Instagram), not when we last asked
+  const ps = D.platform_sync || {}, st = document.getElementById('asof');
+  if (st) st.innerHTML = ps.last_sync ? `Numbers as of ${new Date(ps.last_sync * 1000).toLocaleTimeString([], {hour: 'numeric', minute: '2-digit'})}` +
+    (Date.now() / 1000 - ps.last_sync > 3 * 3600 ? ' <span style="color:var(--flag)">· platforms behind</span>' : '') : '';
   const bs = D.brand_sets, sum = f => bs.reduce((a, b) => a + f(b), 0);
   const fol = bs.flatMap(b => b.accounts).reduce((a, x) => a + (x.followers || 0), 0);
   const tiles = [['Views', sum(b => b.totals.views)], ['Followers', fol], ['Posted', sum(b => b.totals.posts)], ['Editors', bs.filter(b => b.enabled).length]];
