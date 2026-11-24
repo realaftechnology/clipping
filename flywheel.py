@@ -648,7 +648,8 @@ Matt: "I want the video editing models to learn that certain political things ar
 fine. So it's not just politics or out of context or controversial. It's certain things and not other things."
 
 Matt's written rules always win: the hard exclusions and the hook rules in the Output Spec (text hooks must raise a
-question) are never relaxed here. The editor's flag "opening does not raise a question" is about Andy's first spoken
+question) are never relaxed here. Never list as approved anything a hard exclusion covers (any mention of Israel, Jews,
+Gaza and the rest), even when a saved high performer or an approval includes it; leave it out. The editor's flag "opening does not raise a question" is about Andy's first spoken
 line, not the text hook. Reasons Matt or Natalie typed outweigh what you infer from an approval.
 
 Rewrite the profile from all review decisions below. Be specific: name the kinds of takes, topics and framings, not broad
@@ -663,7 +664,7 @@ the decisions; don't invent preferences. Note how many decisions back each line,
 
 Matt's saved high performers (clips he keeps as winners, so their content counts as approved; strong evidence for which
 political takes are fine; weight by views, 100k = 1, 1M = 2, 10M = 3):
-{json.dumps([{k: r[k] for k in ('title', 'folder', 'views', 'weight', 'topic', 'take')} for r in refs_for_prompt()])[:15000]}
+{json.dumps([{k: r[k] for k in ('title', 'folder', 'views', 'weight', 'topic', 'take')} for r in refs_for_prompt()])[:60000]}
 
 Current profile:
 {content_profile()}
@@ -813,7 +814,7 @@ captions and look come from other editors, so never take style lessons from them
 weight field: 100k = 1, 1M = 2, 10M = 3): a lesson from the 12M clip counts for far more than one from a 100k clip, and a
 lesson shared by several big clips is the strongest of all. Tag lessons with the views behind them, e.g.
 "(3 high performers, 15.6M views)", and order lessons by that weight. Where your own posts and these agree, say so; where there are no posts yet, the lessons rest on these.
-{json.dumps(refs_)[:40000] if refs_ else '(none yet)'}
+{json.dumps(refs_)[:150000] if refs_ else '(none yet)'}
 
 Current playbook:
 {open(PLAYBOOK).read() if os.path.exists(PLAYBOOK) else '(none)'}
@@ -945,7 +946,8 @@ def refs_for_prompt(limit=60):
     rows = db().execute('SELECT * FROM refs WHERE analyzed_at IS NOT NULL ORDER BY views DESC LIMIT ?', (limit,)).fetchall()
     return [{'title': r['title'], 'folder': r['category'], 'views': r['views'],
              'weight': round(max(0.5, 1 + math.log10(max(r['views'] or 1, 1) / 1e5)), 2), 'seconds': round(r['duration'] or 0),
-             **{k: v for k, v in json.loads(r['analysis']).items() if k not in ('captions', 'look')}} for r in rows]
+             **{k: (v[:700] if k == 'why_it_worked' else v) for k, v in json.loads(r['analysis']).items() if k not in ('captions', 'look')}}
+            for r in rows]
 
 
 # ---------- queue / post / track ----------
