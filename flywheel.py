@@ -747,10 +747,13 @@ def queue(now=None):
         todays = c.execute("SELECT DISTINCT p.edit_id, p.slot, r.mtime FROM posts p JOIN edits e ON e.id=p.edit_id JOIN raw_clips r ON r.id=e.raw_id "
                            "WHERE p.editor=? AND p.slot>=? AND p.slot<? AND p.status IN ('queued','posted','publishing')", (ed['id'], t0, t1)).fetchall()
         quota = daily_quota(c, ed, today, sum(1 for r in todays if r['mtime'] and is_fresh(r['mtime'])))
-        approved = c.execute("SELECT e.id, r.mtime FROM edits e JOIN raw_clips r ON r.id=e.raw_id WHERE e.editor=? AND e.status='approved' "
+        approved = c.execute("SELECT e.id, e.raw_id, r.mtime FROM edits e JOIN raw_clips r ON r.id=e.raw_id WHERE e.editor=? AND e.status='approved' "
                              "ORDER BY r.mtime DESC, e.id", (ed['id'],)).fetchall()
+        # an archive clip can be used by several editors, but never by two of them on the same day
+        others_today = {r[0] for r in c.execute("SELECT e.raw_id FROM posts p JOIN edits e ON e.id=p.edit_id WHERE p.editor!=? AND p.slot>=? "
+                                                "AND p.slot<? AND p.status IN ('queued','posted','publishing')", (ed['id'], t0, t1))}
         fresh = [e['id'] for e in approved if is_fresh(e['mtime'])]
-        evergreen = [e['id'] for e in approved if not is_fresh(e['mtime'])]
+        evergreen = [e['id'] for e in approved if not is_fresh(e['mtime']) and e['raw_id'] not in others_today]
         taken = {r['slot'] for r in todays}
         open_slots = [t for t in (at(today, hm) for hm in spread(ed['slots'], quota)) if t > now + 300 and t not in taken]
         planned = []
@@ -951,11 +954,13 @@ def next_fresh(c, eid):
                      (time.time() - CFG.get('fresh_days', 7) * 86400, eid)).fetchone()
 
 
-def next_evergreen(c):
-    """Archive clip no editor has used yet, newest first, so each editor's evergreen days use different clips."""
+def next_evergreen(c, eid):
+    """Archive clip this editor hasn't used, newest first. Other editors may use the same clip, just not on the same
+    day (queue() enforces that); clips another editor currently has lined up go last to avoid clashes."""
     return c.execute("SELECT r.id FROM raw_clips r WHERE r.mtime<=? AND r.id NOT IN (SELECT raw_id FROM blocked) "
-                     "AND NOT EXISTS (SELECT 1 FROM edits e WHERE e.raw_id=r.id) ORDER BY r.mtime DESC LIMIT 1",
-                     (time.time() - CFG.get('fresh_days', 7) * 86400,)).fetchone()
+                     "AND NOT EXISTS (SELECT 1 FROM edits e WHERE e.raw_id=r.id AND e.editor=?) "
+                     "ORDER BY EXISTS (SELECT 1 FROM edits o WHERE o.raw_id=r.id AND o.editor!=? AND o.status IN ('approved','queued')), "
+                     "r.mtime DESC LIMIT 1", (time.time() - CFG.get('fresh_days', 7) * 86400, eid, eid)).fetchone()
 
 
 def run():
@@ -982,7 +987,7 @@ def run():
                                         "AND r.mtime<=?", (ed['id'], time.time() - CFG.get('fresh_days', 7) * 86400)).fetchone()[0]
             while tries < 4 and count("'ready'") < ed.get('max_review', 10):
                 tries += 1
-                r = next_fresh(c, ed['id']) or (next_evergreen(c) if reserve() < CFG.get('evergreen_reserve', 3) else None)
+                r = next_fresh(c, ed['id']) or (next_evergreen(c, ed['id']) if reserve() < CFG.get('evergreen_reserve', 3) else None)
                 if not r:
                     break
                 eid = decide(r['id'], ed['id'])
