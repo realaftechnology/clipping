@@ -73,12 +73,39 @@ for i in keep[1:]:
         runs.append(cur)
         cur = [i]
 runs.append(cur)
+def spoken(i, step):
+    """Nearest word with text from index i in direction step (skips blank tokens), or None."""
+    while 0 <= i < len(T):
+        if T[i]['text'].strip():
+            return i
+        i += step
+    return None
+
+
+# Matt, 2026-11-24, on a posted clip: "This video skips at 'if you play it' and at 'f*ckin a year'. It plays the same
+# frame or two twice. Like a CD skip. That needs to be fixed and never happen again." Cause: a cut point may move up to
+# 0.3 s after a kept word / 0.25 s before the next one to land in silence; when the removed word was shorter than that,
+# the two pieces overlapped and the overlap played twice. So each cut point may only move into silence on its own side
+# of the removed words, never into them, and pieces may never overlap (checked again below before anything is cut).
 segs = []
 for r in runs:
     s0, e0 = wt(r[0], 'from'), wt(r[-1], 'to')
-    s = quietest(s0, s0 - 0.25, s0 + 0.08)
-    e = quietest(e0, e0 - 0.05, e0 + 0.3)
+    lo, hi = s0 - 0.25, e0 + 0.3
+    p_, n_ = spoken(r[0] - 1, -1), spoken(r[-1] + 1, 1)
+    if p_ is not None and p_ in removed:  # removed word(s) just before: start after they end
+        lo = max(lo, wt(p_, 'to') - 0.02)
+    if n_ is not None and n_ in removed:  # removed word(s) just after: end before they begin
+        hi = min(hi, wt(n_, 'from') + 0.02)
+    s = quietest(s0, min(lo, s0), s0 + 0.08)
+    e = quietest(e0, e0 - 0.05, max(hi, e0))
     segs.append([max(0, s), min(dur, e)])
+merged = [segs[0]]
+for s, e in segs[1:]:
+    if s < merged[-1][1] + 0.034:  # less than a frame apart (or overlapping): too small to be a cut, play straight through
+        merged[-1][1] = max(merged[-1][1], e)
+    else:
+        merged.append([s, e])
+segs = merged
 
 # shorten long pauses inside each segment to a natural breath
 final = []
@@ -100,6 +127,10 @@ for s, e in segs:
             i += 1
     final.append([last, e])
 final = [[round(a_, 3), round(b_, 3)] for a_, b_ in final if b_ - a_ > 0.12]
+# hard guard: time only ever moves forward, so nothing is ever played twice
+for (a1, b1), (a2, b2) in zip(final, final[1:]):
+    if a2 < b1:
+        sys.exit(f'refusing to cut: piece at {a2}s starts before the previous piece ends ({b1}s) - it would play twice')
 
 # re-time the words onto the new timeline. Every kept word stays in the captions: whisper's word times run long (they
 # swallow the pause after a word), so a word is placed by where it starts, and one whose start fell inside a shortened

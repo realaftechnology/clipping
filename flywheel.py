@@ -491,6 +491,7 @@ def render(edit_id, retried=False):
     out = os.path.join(out_dir, f"{ep}_{ed['name']}_{row['subject'].strip()}_v{e['version']}.mp4")
     d = json.loads(e['decision'])
     env, src_dur = dict(os.environ, AI_EDITORS_WORK=WORK), pr['duration']  # render_clip.sh uses this machine's work_dir
+    t = None
     if d.get('trim'):
         t = tighten(e, row, pr, d['trim'])
         if t:
@@ -501,6 +502,8 @@ def render(edit_id, retried=False):
     subprocess.run([os.path.join(HERE, 'lib', 'render_clip.sh'), e['editor'], str(e['raw_id']), e['hook'], e['song'], str(e['music_start'] or 0), out],
                    check=True, capture_output=True, env=env, stdin=subprocess.DEVNULL)
     q = qa(out, src_dur)
+    if t and t.get('replays'):  # never post a clip with a skip in it
+        q['problems'].append('a moment plays twice at ' + ', '.join(f'{x[0]}s' for x in t['replays']))
     c.execute('UPDATE edits SET path=?, qa=?, updated=? WHERE id=?', (out, json.dumps(q), time.time(), edit_id))
     c.commit()
     note = e['note'] or ''
@@ -1189,8 +1192,13 @@ def tighten(e, row, pr, plan):
         cmd += ['--crop', f"{crop['x']},{crop['w']}"]
     r = json.loads(subprocess.run(cmd, capture_output=True, text=True, check=True, stdin=subprocess.DEVNULL).stdout.strip().splitlines()[-1])
     log(f"edit {e['id']} trimmed {pr['duration']:.1f}s -> {r['duration']:.1f}s ({r['cuts']} cuts): {plan.get('summary', '')}")
+    # independent check that no moment plays twice (the "CD skip", Matt 2026-11-24), on the voice track before music
+    rp = json.loads(subprocess.run([sys.executable, os.path.join(HERE, 'lib', 'replay.py'), os.path.join(work, 'source.mov')],
+                                   capture_output=True, text=True, check=True, stdin=subprocess.DEVNULL).stdout)
+    if rp:
+        log(f"edit {e['id']} REPLAY at cut(s): " + ', '.join(f'{t}s ({lag}s plays twice)' for t, lag in rp))
     return {'src': os.path.join(work, 'source.mov'), 'words': os.path.join(work, 'words.json'), 'duration': r['duration'],
-            'vertical': r.get('vertical', False)}
+            'vertical': r.get('vertical', False), 'replays': rp}
 
 
 # ---------- does the finished clip still make sense? (Matt, 2026-11-24) ----------
