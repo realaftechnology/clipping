@@ -643,7 +643,7 @@ async function showAccess() {
       `<small>${esc(pf)} ${esc((e.handles || {})[pf] || '')} · Zernio ${esc(id)}${(e.usernames || {})[id] ? ' = @' + esc(e.usernames[id]) : ' (not seen in Zernio)'}</small>`).join('') || '<small>no accounts</small>'}</span>
       ${e.status === 'pending' ? `<button class="rbtn" onclick="admin('editors/${e.id}/approve')">Approve</button>` : ''}</div>`).join('')}
     <div class="sec">Recent sign-ins</div>${A.logins.slice(0, 10).map(l => `<div class="row"><span>${esc(l.identity)}${l.new_device ? ' <b style="color:var(--flag)">new device</b>' : ''}<small>${t(l.at)} · ${esc(l.country)} ${esc(l.ip)}</small></span></div>`).join('')}
-    <div class="sec">Audit log · ${A.audit_ok.checked} entries, chain ${A.audit_ok.ok ? 'intact' : 'BROKEN'}</div><div id="auditlog"></div>
+    <div class="sec">Audit log · ${A.audit_ok.checked} entries, chain ${A.audit_ok.ok ? 'intact' : 'BROKEN'}${A.audit_ok.before_key ? ` (first ${A.audit_ok.before_key} from before setup)` : ''}</div><div id="auditlog"></div>
     </div>`;
   sheet(html, null);
   const au = await fetch('/api/audit').then(r => r.json());

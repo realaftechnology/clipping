@@ -13,7 +13,10 @@ _local = threading.local()
 AUDIT_LOCK = threading.Lock()
 # The audit chain is keyed (HMAC) with a secret kept outside the database, so someone with the database alone can't
 # rewrite history and recompute the chain. The head is also sent out daily (zernio_hub.backup) so a cut-off tail shows.
-AUDIT_KEY = (os.environ.get('AUDIT_KEY') or 'local-test-only').encode()
+PLACEHOLDER = b'local-test-only'
+AUDIT_KEY = os.environ.get('AUDIT_KEY', '').encode() or PLACEHOLDER
+if AUDIT_KEY == PLACEHOLDER and os.environ.get('RAILWAY_ENVIRONMENT'):
+    raise SystemExit('AUDIT_KEY is not set: run hub/setup.sh hub. The hub will not run without it.')
 
 SCHEMA = '''
 CREATE TABLE IF NOT EXISTS users(
@@ -111,15 +114,20 @@ def audit(actor, actor_kind, action, target='', detail=None, ip=''):
 
 
 def verify_audit():
-    prev = ''
-    n = 0
+    """Re-walk the chain. Entries from before the audit key was set (the hub's first starts, before setup) were sealed
+    with the built-in placeholder key; those are accepted only at the very start of the log and counted separately."""
+    prev, n, before_key, keyed = '', 0, 0, False
     for r in db().execute('SELECT * FROM audit ORDER BY id'):
-        h = hmac.new(AUDIT_KEY, json.dumps([prev, r['at'], r['actor'], r['actor_kind'], r['action'], r['target'], r['detail'], r['ip']]).encode(),
-                     hashlib.sha256).hexdigest()
-        if r['prev'] != prev or r['hash'] != h:
-            return {'ok': False, 'broken_at': r['id'], 'checked': n}
+        msg = json.dumps([prev, r['at'], r['actor'], r['actor_kind'], r['action'], r['target'], r['detail'], r['ip']]).encode()
+        h = hmac.new(AUDIT_KEY, msg, hashlib.sha256).hexdigest()
+        if r['prev'] == prev and r['hash'] == h:
+            keyed = True
+        elif not keyed and r['prev'] == prev and r['hash'] == hmac.new(PLACEHOLDER, msg, hashlib.sha256).hexdigest():
+            h, before_key = r['hash'], before_key + 1
+        else:
+            return {'ok': False, 'broken_at': r['id'], 'checked': n, 'before_key': before_key}
         prev, n = h, n + 1
-    return {'ok': True, 'checked': n, 'head': prev[:16]}
+    return {'ok': True, 'checked': n, 'before_key': before_key, 'head': prev[:16]}
 
 
 def alert(text, level='warn'):
