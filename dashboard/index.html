@@ -6,292 +6,317 @@
 <title>AI Editor Network</title>
 <style>
 :root {
-  color-scheme: light;
-  --bg: #f4f4f2; --surface: #fcfcfb; --surface-2: #f0efec; --border: #e2e1dc;
-  --text: #0b0b0b; --text-2: #52514e; --muted: #8a8984;
-  --accent: #0b0b0b; --accent-ink: #fcfcfb;
-  --good: #0ca30c; --warning: #fab219; --serious: #ec835a; --critical: #d03b3b;
-  --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100; --s5: #e87ba4; --s6: #008300; --s7: #6250d6; --s8: #e34948;
-  --grid: #e8e7e3;
+  color-scheme: dark;
+  --bg: #08090b; --bg-2: #0f1114; --panel: #14171b; --line: #262a30;
+  --text: #f0efec; --text-2: #a9aaa4; --muted: #6c6e6a;
+  --node: #15181d; --node-ring: #3a414b; --ghost: #262a31;
+  --live: #22c55e; --flag: #ec835a;
+  --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181; --s6: #0ca30c; --s7: #9085e9; --s8: #e66767;
+  --glow: 0.5;
 }
-@media (prefers-color-scheme: dark) {
-  :root:where(:not([data-theme="light"])) {
-    color-scheme: dark;
-    --bg: #111110; --surface: #1a1a19; --surface-2: #232321; --border: #2e2e2b;
-    --text: #f0efec; --text-2: #c3c2b7; --muted: #8f8e86;
-    --accent: #f0efec; --accent-ink: #1a1a19;
-    --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181; --s6: #0ca30c; --s7: #9085e9; --s8: #e66767;
-    --grid: #2a2a27;
+@media (prefers-color-scheme: light) {
+  :root:where(:not([data-theme="dark"])) {
+    color-scheme: light;
+    --bg: #f3f3f0; --bg-2: #ecebe7; --panel: #fcfcfb; --line: #dddcd6;
+    --text: #0b0b0b; --text-2: #52514e; --muted: #8a8984;
+    --node: #fcfcfb; --node-ring: #cfcec7; --ghost: #dcdbd5;
+    --live: #0ca30c; --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100; --s5: #e87ba4; --s6: #008300; --s7: #6250d6; --s8: #e34948;
+    --glow: 0.28;
   }
 }
-:root[data-theme="dark"] {
-  color-scheme: dark;
-  --bg: #111110; --surface: #1a1a19; --surface-2: #232321; --border: #2e2e2b;
-  --text: #f0efec; --text-2: #c3c2b7; --muted: #8f8e86;
-  --accent: #f0efec; --accent-ink: #1a1a19;
-  --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181; --s6: #0ca30c; --s7: #9085e9; --s8: #e66767;
-  --grid: #2a2a27;
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f3f3f0; --bg-2: #ecebe7; --panel: #fcfcfb; --line: #dddcd6;
+  --text: #0b0b0b; --text-2: #52514e; --muted: #8a8984;
+  --node: #fcfcfb; --node-ring: #cfcec7; --ghost: #dcdbd5;
+  --live: #0ca30c; --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100; --s5: #e87ba4; --s6: #008300; --s7: #6250d6; --s8: #e34948;
+  --glow: 0.28;
 }
 * { box-sizing: border-box; }
-body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif; }
-.wrap { max-width: 1240px; margin: 0 auto; padding: 24px 16px 64px; }
-header { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 20px; }
-h1 { font-size: 22px; margin: 0; letter-spacing: -0.01em; }
-h2 { font-size: 15px; margin: 0 0 12px; }
-.sub { color: var(--text-2); margin-top: 2px; }
-.pill { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px; background: var(--surface); border: 1px solid var(--border); color: var(--text-2); font-size: 12px; }
-.dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
-section { margin-top: 28px; }
-.card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
-.kpis { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; }
-@media (max-width: 1100px) { .kpis { grid-template-columns: repeat(3, 1fr); } }
-@media (max-width: 560px) { .kpis { grid-template-columns: repeat(2, 1fr); } }
-.kpi .label { color: var(--text-2); font-size: 12px; }
-.kpi .value { font-size: 28px; font-weight: 650; letter-spacing: -0.02em; margin-top: 4px; font-variant-numeric: tabular-nums; }
-.kpi .note { color: var(--muted); font-size: 12px; margin-top: 2px; }
-.sets { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 12px; }
-@media (max-width: 420px) { .sets { grid-template-columns: 1fr; } }
-.set-head { display: flex; justify-content: space-between; gap: 8px; align-items: flex-start; }
-.set-name { font-size: 17px; font-weight: 650; display: flex; align-items: center; gap: 8px; }
-.set-meta { color: var(--text-2); font-size: 12px; margin-top: 2px; }
-.tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
-.tag { font-size: 12px; padding: 2px 8px; border-radius: 6px; background: var(--surface-2); color: var(--text-2); }
-.accts { margin-top: 14px; border-top: 1px solid var(--border); }
-.acct { display: grid; grid-template-columns: 92px 1fr auto; gap: 8px; padding: 8px 0; border-bottom: 1px solid var(--border); align-items: center; }
-.acct .pf { font-weight: 600; }
-.acct .h { color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.acct .f { font-variant-numeric: tabular-nums; text-align: right; }
-.acct.off .pf, .acct.off .h, .acct.off .f { color: var(--muted); font-weight: 400; }
-.mini { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 14px; }
-.mini div { background: var(--surface-2); border-radius: 8px; padding: 8px 10px; }
-.mini b { display: block; font-size: 17px; font-variant-numeric: tabular-nums; }
-.mini span { color: var(--text-2); font-size: 11px; }
-.pipe { margin-top: 12px; color: var(--text-2); font-size: 12px; display: flex; flex-wrap: wrap; gap: 4px 14px; }
-.pipe b { color: var(--text); font-variant-numeric: tabular-nums; }
-.next { margin-top: 10px; font-size: 12px; color: var(--text-2); }
-.chart-wrap { position: relative; }
-.chart-wrap svg { display: block; width: 100%; height: 220px; }
-.axis text { fill: var(--muted); font-size: 11px; }
-.legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--text-2); margin-bottom: 8px; }
-.legend span { display: inline-flex; align-items: center; gap: 6px; }
-.tip { position: absolute; pointer-events: none; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font-size: 12px; box-shadow: 0 4px 16px rgba(0,0,0,.12); display: none; white-space: nowrap; z-index: 5; }
-.empty { color: var(--muted); padding: 28px 0; text-align: center; }
-table { width: 100%; border-collapse: collapse; }
-th, td { text-align: left; padding: 9px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
-th { color: var(--text-2); font-weight: 500; font-size: 12px; }
-td.n, th.n { text-align: right; font-variant-numeric: tabular-nums; }
-.scroll { overflow-x: auto; }
-a { color: inherit; }
-.review { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
-.rv video { width: 100%; aspect-ratio: 9/16; max-height: 340px; background: #000; border-radius: 8px; display: block; }
-.rv .hook { font-weight: 600; margin: 10px 0 4px; }
-.rv .why { color: var(--text-2); font-size: 12px; min-height: 2.9em; }
-.rv .why.flag::before { content: "⚑ "; color: var(--serious); }
-.btns { display: flex; gap: 8px; margin-top: 10px; }
-button { font: inherit; font-size: 13px; border-radius: 8px; padding: 7px 12px; cursor: pointer; border: 1px solid var(--border); background: var(--surface-2); color: var(--text); }
-button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
-button:disabled { opacity: .5; cursor: default; }
-.log { font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--text-2); white-space: pre-wrap; word-break: break-word; max-height: 320px; overflow: auto; }
-.cos { display: flex; gap: 12px; align-items: flex-start; }
-.cos .ico { width: 32px; height: 32px; border-radius: 8px; background: var(--surface-2); display: grid; place-items: center; flex: none; font-weight: 700; }
-.status-good { color: var(--good); } .status-warn { color: var(--serious); } .status-bad { color: var(--critical); }
-details summary { cursor: pointer; color: var(--text-2); }
+html, body { height: 100%; }
+body { margin: 0; background: radial-gradient(ellipse at 54% 50%, var(--bg-2), var(--bg) 70%); color: var(--text);
+  font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif; overflow: hidden; }
+.top { position: fixed; inset: 0 0 auto 0; display: flex; align-items: center; gap: 24px; padding: 14px 20px; z-index: 5; pointer-events: none; }
+.top > * { pointer-events: auto; }
+.brand { font-weight: 650; letter-spacing: -0.01em; display: flex; align-items: center; gap: 10px; white-space: nowrap; }
+.beat { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); position: relative; }
+.beat.on { background: var(--live); }
+.beat.on::after { content: ""; position: absolute; inset: -5px; border-radius: 50%; border: 2px solid var(--live); animation: ping 2s ease-out infinite; }
+@keyframes ping { from { transform: scale(.5); opacity: .9; } to { transform: scale(1.6); opacity: 0; } }
+.stats { display: flex; gap: 26px; margin-left: auto; }
+.stat b { display: block; font-size: 20px; font-weight: 650; font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
+.stat span { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+.rbtn { display: flex; align-items: center; gap: 8px; background: var(--panel); border: 1px solid var(--line); color: var(--text); border-radius: 999px; padding: 8px 14px; font: inherit; cursor: pointer; }
+.rbtn .n { background: var(--flag); color: #111; font-weight: 700; border-radius: 999px; min-width: 22px; padding: 1px 7px; font-size: 12px; text-align: center; }
+#stage { position: fixed; inset: 0; }
+#stage svg { width: 100%; height: 100%; display: block; }
+.node { cursor: pointer; }
+.node:focus { outline: none; }
+.node:focus-visible .ring { stroke: var(--text); }
+.lbl { fill: var(--text); font-weight: 600; text-anchor: middle; pointer-events: none; }
+.sub { fill: var(--text-2); text-anchor: middle; pointer-events: none; }
+.ghost text { fill: var(--muted); }
+.spin { animation: spin 40s linear infinite; transform-box: fill-box; transform-origin: center; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.breathe { animation: breathe 3.2s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
+@keyframes breathe { 50% { opacity: .35; transform: scale(1.12); } }
+.grow { animation: grow .5s cubic-bezier(.2,.9,.3,1.2) both; transform-box: fill-box; transform-origin: center; }
+@keyframes grow { from { transform: scale(.2); opacity: 0; } }
+.draw { stroke-dasharray: 900; stroke-dashoffset: 900; animation: draw .8s ease-out forwards; }
+@keyframes draw { to { stroke-dashoffset: 0; } }
+.tip { position: fixed; pointer-events: none; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 8px 11px; font-size: 12px; display: none; z-index: 20; white-space: nowrap; box-shadow: 0 8px 30px rgba(0,0,0,.35); }
+.tip b { font-size: 13px; }
+.ticker { position: fixed; left: 20px; bottom: 16px; right: 20px; font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; z-index: 4; }
+.sheet { position: fixed; top: 64px; right: 16px; bottom: 44px; width: 340px; background: var(--panel); border: 1px solid var(--line); border-radius: 16px; z-index: 10;
+  transform: translateX(380px); transition: transform .35s cubic-bezier(.2,.8,.2,1); overflow: auto; padding: 18px; box-shadow: 0 20px 60px rgba(0,0,0,.35); }
+.sheet.open { transform: none; }
+.sheet h3 { margin: 0; font-size: 18px; display: flex; align-items: center; gap: 8px; padding-right: 28px; }
+.x { position: absolute; top: 12px; right: 12px; background: none; border: 0; color: var(--text-2); font-size: 22px; cursor: pointer; line-height: 1; padding: 4px 8px; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 14px; }
+.chip { font-size: 12px; padding: 3px 9px; border-radius: 999px; background: var(--bg-2); color: var(--text-2); font-weight: 400; }
+.nums { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.nums div { background: var(--bg-2); border-radius: 10px; padding: 9px 10px; }
+.nums b { display: block; font-size: 18px; font-variant-numeric: tabular-nums; }
+.nums span { font-size: 11px; color: var(--muted); }
+.plist a, .plist div.p { display: flex; justify-content: space-between; gap: 10px; padding: 9px 0; border-bottom: 1px solid var(--line); color: var(--text); text-decoration: none; }
+.plist .h { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.plist .v { color: var(--text-2); font-variant-numeric: tabular-nums; flex: none; }
+.sec { margin-top: 18px; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+.rv { display: grid; grid-template-columns: 96px 1fr; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+.rv video { width: 96px; aspect-ratio: 9/16; background: #000; border-radius: 8px; object-fit: cover; cursor: pointer; }
+.rv .hk { font-weight: 600; }
+.rv .why { font-size: 12px; color: var(--text-2); margin-top: 4px; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.rv .why::before { content: "⚑ "; color: var(--flag); }
+.btns { display: flex; gap: 6px; margin-top: 8px; }
+.btns button { font: inherit; font-size: 12px; padding: 5px 11px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg-2); color: var(--text); cursor: pointer; }
+.btns button.ok { background: var(--text); color: var(--bg); border-color: var(--text); }
+.done { font-size: 12px; color: var(--text-2); margin-top: 8px; }
+@media (max-width: 720px) {
+  .stats { gap: 14px; } .stat b { font-size: 16px; } .brand .t { display: none; }
+  .sheet { left: 8px; right: 8px; width: auto; top: auto; height: 70vh; bottom: 8px; transform: translateY(110%); }
+  .ticker { display: none; }
+}
+@media (prefers-reduced-motion: reduce) { .spin, .breathe, .beat.on::after, .grow, .draw { animation: none; stroke-dashoffset: 0; } }
 </style>
 </head>
 <body>
-<div class="wrap">
-  <header>
-    <div>
-      <h1>AI Editor Network</h1>
-      <div class="sub">Real AF short-form flywheel. One AI editor runs one brand set across every platform.</div>
-    </div>
-    <div id="health" class="pill">Loading…</div>
-  </header>
-
-  <div class="kpis" id="kpis"></div>
-
-  <section>
-    <h2>Brand sets</h2>
-    <div class="sets" id="sets"></div>
-  </section>
-
-  <section class="card">
-    <h2>Views by posting day</h2>
-    <div class="sub" style="margin:-8px 0 10px;font-size:12px">Lifetime views of the posts published each day, last 30 days, all platforms.</div>
-    <div class="legend" id="legend"></div>
-    <div class="chart-wrap" id="chart"></div>
-  </section>
-
-  <section class="card">
-    <h2>Recent posts</h2>
-    <div class="scroll"><table id="posts"></table></div>
-  </section>
-
-  <section>
-    <h2 id="review-title">Waiting for review</h2>
-    <div class="review" id="review"></div>
-  </section>
-
-  <section class="card">
-    <div class="cos">
-      <div class="ico">CoS</div>
-      <div>
-        <h2 style="margin-bottom:4px">Chief of staff</h2>
-        <div class="sub">Planned. One agent overseeing every brand set: measures quality and how distinct each set looks, and takes instructions like “Editor 1 switch caption font” or “Editor 10 stop doing this”, then changes that editor’s settings. Not built yet.</div>
-      </div>
-    </div>
-  </section>
-
-  <section class="card">
-    <details>
-      <summary>Activity log</summary>
-      <div class="log" id="log" style="margin-top:10px"></div>
-    </details>
-  </section>
+<div class="top">
+  <div class="brand"><span class="beat" id="beat"></span><span class="t">AI Editor Network</span></div>
+  <div class="stats" id="stats"></div>
+  <button class="rbtn" onclick="openReview()">Review <span class="n" id="rcount">0</span></button>
 </div>
+<div id="stage"></div>
+<div class="ticker" id="ticker"></div>
 <div class="tip" id="tip"></div>
+<aside class="sheet" id="sheet"><button class="x" onclick="closeSheet()" aria-label="Close">×</button><div id="sheetBody"></div></aside>
 
 <script>
-const PF = {tiktok: 'TikTok', instagram: 'Instagram', youtube: 'YouTube', facebook: 'Facebook', x: 'X'};
-const SLOT = i => `var(--s${(i % 8) + 1})`;
+const PF = {tiktok: ['TikTok', 'TT', h => `https://www.tiktok.com/@${h}`], instagram: ['Instagram', 'IG', h => `https://www.instagram.com/${h}/`],
+            youtube: ['YouTube', 'YT', h => `https://www.youtube.com/@${h}`], facebook: ['Facebook', 'FB', h => `https://www.facebook.com/${h}`], x: ['X', 'X', h => `https://x.com/${h}`]};
+const SLOTS = 10, W = 1400, H = 900, CX = 760, CY = 450;
+const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
 const fmt = n => n == null ? '–' : n >= 1e6 ? (n / 1e6).toFixed(1).replace(/\.0$/, '') + 'M' : n >= 1e4 ? Math.round(n / 1e3) + 'K' : n >= 1e3 ? (n / 1e3).toFixed(1).replace(/\.0$/, '') + 'K' : String(n);
-const when = t => t ? new Date(t * 1000).toLocaleString([], {weekday: 'short', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit'}) : '–';
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
 const ago = t => { const m = Math.round((Date.now() / 1000 - t) / 60); return m < 1 ? 'just now' : m < 60 ? m + ' min ago' : m < 1440 ? Math.round(m / 60) + ' h ago' : Math.round(m / 1440) + ' d ago'; };
-const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c]));
-let colorOf = {}, nameOf = {};
+const when = t => new Date(t * 1000).toLocaleString([], {weekday: 'short', hour: 'numeric', minute: '2-digit'});
+const color = i => `var(--s${(i % 8) + 1})`;
+const pad = i => String(i + 1).padStart(2, '0');
+const START = () => innerWidth < innerHeight ? -90 : 180;  // first editor's branches fan up on phones, left on wide screens
+const pol = (r, deg) => [CX + r * Math.cos(deg * Math.PI / 180), CY + r * Math.sin(deg * Math.PI / 180)];
+let D = null, open = new Set(), first = true, edges = [], particles = [], sheetFor = null, sig = '';
 
 async function load() {
-  let d;
-  try { const res = await fetch('/api/overview'); if (res.status === 401) { location.reload(); return; } d = await res.json(); } catch (e) { document.getElementById('health').textContent = 'Dashboard server not reachable'; return; }
-  if (d.error) { document.getElementById('health').textContent = d.error; return; }
-  d.brand_sets.forEach((b, i) => { colorOf[b.id] = SLOT(i); nameOf[b.id] = b.name; });
-  health(d); kpis(d); sets(d); chart(d); review(d); posts(d);
-  document.getElementById('log').textContent = d.log.join('\n') || 'No activity yet.';
+  try { const res = await fetch('/api/overview'); if (res.status === 401) { location.reload(); return; } D = await res.json(); } catch (e) { return; }
+  if (D.error) { document.getElementById('ticker').textContent = D.error; return; }
+  if (first && D.brand_sets.length) { open.add(D.brand_sets[0].id); first = false; }
+  top_(); ticker();
+  const s = JSON.stringify([D.brand_sets, D.posts.map(p => p.platforms.map(x => x.views))]);
+  if (s !== sig) { sig = s; draw(); }  // redraw only when something changed, so the web keeps flowing
+  if (sheetFor) sheetFor();
 }
 
-function health(d) {
-  const r = d.last_run || {}, el = document.getElementById('health');
-  let cls = 'status-bad', text = 'Loop has not run';
-  if (r.finished) {
-    const age = Date.now() / 1000 - r.finished;
-    cls = age < 45 * 60 ? 'status-good' : age < 3 * 3600 ? 'status-warn' : 'status-bad';
-    text = (age < 45 * 60 ? 'Loop running' : 'Loop stalled') + ' · last run ' + ago(r.finished);
-  } else if (r.started) { cls = 'status-good'; text = 'Loop running now · started ' + ago(r.started); }
-  el.innerHTML = `<span class="${cls}">●</span> ${esc(text)}` + (d.stats_at ? ` · stats ${ago(d.stats_at)}` : '') + (d.received ? ` · synced ${ago(d.received)}` : '');
+function bsViews(b, pf) { return D.posts.filter(p => p.brand_set === b.id).flatMap(p => p.platforms).filter(x => x.platform === pf && x.status === 'posted').reduce((a, x) => a + (x.views || 0), 0); }
+
+function top_() {
+  const r = D.last_run || {}, fin = r.finished || r.started, live = fin && Date.now() / 1000 - fin < 45 * 60;
+  const beat = document.getElementById('beat');
+  beat.className = 'beat' + (live ? ' on' : ''); beat.title = fin ? `Last run ${ago(fin)}` : 'Not running';
+  const bs = D.brand_sets, sum = f => bs.reduce((a, b) => a + f(b), 0);
+  const fol = bs.flatMap(b => b.accounts).reduce((a, x) => a + (x.followers || 0), 0);
+  const tiles = [['Views', sum(b => b.totals.views)], ['Followers', fol], ['Posted', sum(b => b.totals.posts)], ['Editors', bs.filter(b => b.enabled).length]];
+  const el = document.getElementById('stats');
+  if (!el.children.length) el.innerHTML = tiles.map(([l]) => `<div class="stat"><b data-v="0">0</b><span>${l}</span></div>`).join('');
+  [...el.children].forEach((c, i) => countTo(c.querySelector('b'), tiles[i][1]));
+  document.getElementById('rcount').textContent = D.review.length;
 }
 
-function kpis(d) {
-  const bs = d.brand_sets, sum = f => bs.reduce((a, b) => a + f(b), 0);
-  const accts = bs.flatMap(b => b.accounts), live = accts.filter(a => a.connected);
-  const fol = live.reduce((a, x) => a + (x.followers || 0), 0), g7 = live.reduce((a, x) => a + (x.growth_7d || 0), 0);
-  const tiles = [
-    ['Brand sets', bs.filter(b => b.enabled).length, `${bs.length} configured · target 10`],
-    ['Accounts live', live.length, `${accts.length - live.length} planned, not connected`],
-    ['Clips posted', sum(b => b.totals.posts), `${sum(b => b.counts.queued)} scheduled`],
-    ['Views', fmt(sum(b => b.totals.views)), `${fmt(sum(b => b.totals.likes))} likes · ${fmt(sum(b => b.totals.comments))} comments`],
-    ['Followers', fmt(fol), (g7 >= 0 ? '+' : '') + fmt(g7) + ' in 7 days'],
-    ['Waiting for review', d.review.length, `${sum(b => b.counts.excluded)} excluded by the filter`],
-  ];
-  document.getElementById('kpis').innerHTML = tiles.map(([l, v, n]) => `<div class="card kpi"><div class="label">${l}</div><div class="value">${v}</div><div class="note">${esc(n)}</div></div>`).join('');
+function countTo(el, to) {
+  const from = +el.dataset.v || 0; el.dataset.v = to;
+  if (reduce || from === to) { el.textContent = fmt(to); return; }
+  const t0 = performance.now();
+  const step = t => { const k = Math.min(1, (t - t0) / 900), e = 1 - Math.pow(1 - k, 3); el.textContent = fmt(Math.round(from + (to - from) * e)); if (k < 1) requestAnimationFrame(step); };
+  requestAnimationFrame(step);
 }
 
-function sets(d) {
-  document.getElementById('sets').innerHTML = d.brand_sets.map(b => {
-    const t = b.totals, c = b.counts;
-    const accts = b.accounts.map(a => `<div class="acct ${a.connected ? '' : 'off'}"><div class="pf">${PF[a.platform] || a.platform}</div>
-      <div class="h">${a.connected ? esc(a.handle || 'connected') : 'not connected yet'}</div>
-      <div class="f">${a.connected ? fmt(a.followers) + ' followers' : ''}</div></div>`).join('');
-    return `<div class="card">
-      <div class="set-head"><div>
-        <div class="set-name"><span class="dot" style="background:${colorOf[b.id]}"></span>${esc(b.name)}</div>
-        <div class="set-meta">${esc(b.editor)} · ${b.enabled ? (b.auto_post ? 'auto-posting safe clips' : 'review only') : 'paused'}</div>
-      </div><span class="pill">${b.slots.length} posts/day max</span></div>
-      <div class="tags"><span class="tag">${esc(b.theme || 'Theme not set')}</span><span class="tag">${esc(b.format)}</span>
-        <span class="tag">Captions: ${esc(b.look.captions)}</span><span class="tag">Hook: ${esc(b.look.hook)}</span></div>
-      <div class="mini"><div><b>${t.posts}</b><span>posted</span></div><div><b>${fmt(t.views)}</b><span>views</span></div>
-        <div><b>${t.posts ? fmt(Math.round(t.views / t.posts)) : '–'}</b><span>views / clip</span></div><div><b>${fmt(t.likes)}</b><span>likes</span></div></div>
-      <div class="accts">${accts}</div>
-      <div class="pipe"><span><b>${c.queued + c.approved}</b> scheduled</span><span><b>${c.ready + c.qa_failed}</b> in review</span>
-        <span><b>${c.excluded}</b> excluded</span><span><b>${c.skipped}</b> skipped</span><span><b>${c.rejected}</b> rejected</span><span><b>${c.taken_down}</b> taken down</span></div>
-      <div class="next">${b.next_post ? `Next post ${when(b.next_post.slot)}: “${esc(b.next_post.hook)}”` : 'Nothing scheduled.'}</div>
-    </div>`;
-  }).join('');
-}
-
-function chart(d) {
-  const el = document.getElementById('chart'), leg = document.getElementById('legend');
-  const ids = d.brand_sets.map(b => b.id);
-  leg.innerHTML = ids.length > 1 ? ids.map(id => `<span><span class="dot" style="background:${colorOf[id]}"></span>${esc(nameOf[id])}</span>`).join('') : '';
-  const days = [];
-  for (let i = 29; i >= 0; i--) { const x = new Date(); x.setDate(x.getDate() - i); days.push(x.toLocaleDateString('en-CA')); }
-  const by = {}; d.daily.forEach(r => { (by[r.day] ||= {})[r.brand_set] = r; });
-  const total = day => ids.reduce((a, id) => a + ((by[day] || {})[id]?.views || 0), 0);
-  const max = Math.max(...days.map(total));
-  if (!max) { el.innerHTML = `<div class="empty">${d.daily.length ? 'Posts are live; platforms haven’t reported views yet. Numbers usually appear within a few hours.' : 'No posts yet.'}</div>`; return; }
-  const W = el.clientWidth || 900, H = 220, L = 44, B = 22, T = 8, iw = W - L - 8, ih = H - B - T, bw = iw / days.length;
-  const nice = (() => { const p = Math.pow(10, Math.floor(Math.log10(max))); for (const m of [1, 2, 2.5, 5, 10]) if (m * p >= max) return m * p; })();
-  const y = v => T + ih - (v / nice) * ih;
-  let s = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Views by posting day">`;
-  for (let k = 0; k <= 4; k++) { const v = nice * k / 4; s += `<line x1="${L}" x2="${W - 8}" y1="${y(v)}" y2="${y(v)}" stroke="var(--grid)"/><text class="axis" x="${L - 6}" y="${y(v) + 4}" text-anchor="end" font-size="11" fill="var(--muted)">${fmt(v)}</text>`; }
-  days.forEach((day, i) => {
-    let acc = 0; const x = L + i * bw + 2, w = Math.max(2, bw - 4);
-    const segs = ids.filter(id => (by[day] || {})[id]?.views);
-    segs.forEach((id, j) => {
-      const v = by[day][id].views, y0 = y(acc), y1 = y(acc + v); acc += v;
-      const top = j === segs.length - 1, h = Math.max(1, y0 - y1 - (j ? 2 : 0));
-      s += top ? `<path d="M${x},${y0 - (j ? 2 : 0)} V${y1 + 4} q0,-4 4,-4 H${x + w - 4} q4,0 4,4 V${y0 - (j ? 2 : 0)} Z" fill="${colorOf[id]}"/>`
-               : `<rect x="${x}" y="${y1}" width="${w}" height="${h}" fill="${colorOf[id]}"/>`;
+function draw() {
+  const bs = D.brand_sets, lines = [];
+  edges = [];
+  let g = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet"><defs>
+    <radialGradient id="halo"><stop offset="0" stop-color="currentColor" style="stop-opacity:var(--glow)"/><stop offset="1" stop-color="currentColor" stop-opacity="0"/></radialGradient></defs>
+    <g id="edges"></g><g id="parts"></g><g id="nodes">`;
+  for (let i = 0; i < SLOTS; i++) {
+    const ang = START() + i * 360 / SLOTS, [x, y] = pol(205, ang), b = bs[i];
+    if (!b) {  // open editor slot: where the network grows next
+      lines.push(`<line x1="${CX}" y1="${CY}" x2="${x}" y2="${y}" stroke="var(--ghost)" stroke-dasharray="3 6"/>`);
+      g += `<g class="ghost" aria-hidden="true"><circle cx="${x}" cy="${y}" r="20" fill="none" stroke="var(--ghost)" stroke-dasharray="3 4"/><text x="${x}" y="${y + 4}" text-anchor="middle" font-size="11">${pad(i)}</text></g>`;
+      continue;
+    }
+    const c = color(i), sched = b.counts.queued + b.counts.approved, rev = b.counts.ready + b.counts.qa_failed, id = `e${i}`;
+    lines.push(`<path id="${id}" d="M${CX},${CY} L${x},${y}" stroke="${c}" stroke-opacity=".45" stroke-width="1.5" fill="none" class="${reduce ? '' : 'draw'}"/>`);
+    edges.push({id, w: 0.3, c});
+    const circ = 2 * Math.PI * 44, buf = Math.min(1, sched / 3);
+    g += `<g class="node grow" tabindex="0" role="button" aria-label="Editor ${pad(i)}, ${esc(b.name)}" onclick="toggle('${b.id}')" onkeydown="if(event.key==='Enter')toggle('${b.id}')"
+        onmousemove="tipShow(event,'<b>Editor ${pad(i)}</b><br>${sched} scheduled · ${rev} in review<br><span style=&quot;color:var(--muted)&quot;>Tap to ${open.has(b.id) ? 'fold' : 'open'}</span>')" onmouseleave="tipHide()" style="color:${c}">
+      <circle cx="${x}" cy="${y}" r="74" fill="url(#halo)" class="${b.enabled ? 'breathe' : ''}"/>
+      <circle cx="${x}" cy="${y}" r="38" fill="var(--node)" stroke="${c}" stroke-width="2" class="ring"/>
+      <circle cx="${x}" cy="${y}" r="45" fill="none" stroke="var(--line)" stroke-width="3"/>
+      <circle cx="${x}" cy="${y}" r="45" fill="none" stroke="${c}" stroke-width="3" stroke-linecap="round" stroke-dasharray="${circ * buf} ${circ}" transform="rotate(-90 ${x} ${y})"/>
+      <text class="lbl" x="${x}" y="${y - 2}" font-size="12">Editor</text><text class="lbl" x="${x}" y="${y + 16}" font-size="18">${pad(i)}</text>
+      ${rev ? `<g onclick="event.stopPropagation();openReview('${b.id}')"><circle cx="${x + 32}" cy="${y - 32}" r="12" fill="var(--flag)"/><text x="${x + 32}" y="${y - 28}" text-anchor="middle" font-size="11" font-weight="700" fill="#111">${rev}</text></g>` : ''}
+    </g>`;
+    if (!open.has(b.id)) continue;
+    // the editor's brand set
+    const [bx, by] = pol(355, ang), S = 116, bid = `b${i}`;
+    lines.push(`<path id="${bid}" d="M${x},${y} L${bx},${by}" stroke="${c}" stroke-opacity=".6" stroke-width="2" fill="none" class="${reduce ? '' : 'draw'}"/>`);
+    edges.push({id: bid, w: 0.7, c});
+    g += `<g class="node grow" tabindex="0" role="button" aria-label="${esc(b.name)} details" onclick="showSet('${b.id}')" onkeydown="if(event.key==='Enter')showSet('${b.id}')"
+        onmousemove="tipShow(event,'<b>${esc(b.name)}</b><br>Tap for details')" onmouseleave="tipHide()" style="color:${c};animation-delay:.1s">
+      <rect x="${bx - S / 2 - 22}" y="${by - S / 2 - 22}" width="${S + 44}" height="${S + 44}" rx="40" fill="url(#halo)" class="breathe"/>
+      <rect x="${bx - S / 2}" y="${by - S / 2}" width="${S}" height="${S}" rx="18" fill="var(--node)" stroke="${c}" stroke-width="2" class="ring"/>
+      ${wrap(b.name, 13).map((l, k, a) => `<text class="lbl" x="${bx}" y="${by - 20 + k * 15 - (a.length - 1) * 8}" font-size="13">${esc(l)}</text>`).join('')}
+      <text class="lbl" x="${bx}" y="${by + 24}" font-size="26">${fmt(b.totals.views)}</text>
+      <text class="sub" x="${bx}" y="${by + 42}" font-size="10" letter-spacing=".08em">VIEWS</text>
+    </g>`;
+    // its accounts, one per platform
+    const n = b.accounts.length, fan = 26;
+    b.accounts.forEach((a, k) => {
+      const pang = ang + (k - (n - 1) / 2) * fan, [px, py] = pol(505, pang), p = PF[a.platform] || [a.platform, a.platform.slice(0, 2).toUpperCase(), null];
+      const pid = `p${i}_${k}`, v = bsViews(b, a.platform), handle = (a.handle || '').replace(/^@/, '');
+      const href = a.connected && handle && p[2] ? p[2](handle) : null;
+      if (a.connected) {
+        lines.push(`<path id="${pid}" d="M${bx},${by} Q${(bx + px) / 2 + (CX - bx) * 0.1},${(by + py) / 2 + (CY - by) * 0.1} ${px},${py}" stroke="${c}" stroke-opacity=".5" stroke-width="1.5" fill="none" class="${reduce ? '' : 'draw'}"/>`);
+        edges.push({id: pid, w: 0.35 + Math.min(1.6, v / 400), c});
+      } else lines.push(`<line x1="${bx}" y1="${by}" x2="${px}" y2="${py}" stroke="var(--ghost)" stroke-dasharray="3 6"/>`);
+      const tipTxt = a.connected ? `<b>${p[0]}</b> ${esc(a.handle || '')}<br>${fmt(a.followers)} followers · ${fmt(v)} views<br><span style=&quot;color:var(--muted)&quot;>Open profile ↗</span>` : `<b>${p[0]}</b><br>Not connected yet`;
+      const go = href ? `window.open('${href}','_blank','noopener')` : '';
+      g += `<g class="${a.connected ? 'node' : 'ghost'} grow" ${href ? `tabindex="0" role="link" aria-label="${p[0]} profile" onclick="${go}" onkeydown="if(event.key==='Enter')${go}"` : ''}
+          onmousemove="tipShow(event,'${tipTxt}')" onmouseleave="tipHide()" style="color:${c};animation-delay:${.2 + k * .07}s">
+        ${a.connected ? `<circle cx="${px}" cy="${py}" r="46" fill="url(#halo)"/>` : ''}
+        <circle cx="${px}" cy="${py}" r="27" fill="${a.connected ? 'var(--node)' : 'none'}" stroke="${a.connected ? c : 'var(--ghost)'}" stroke-width="${a.connected ? 2 : 1.5}" ${a.connected ? '' : 'stroke-dasharray="3 4"'} class="ring"/>
+        <text class="lbl" x="${px}" y="${py + 5}" font-size="14" ${a.connected ? '' : 'style="fill:var(--muted)"'}>${p[1]}</text>
+        ${a.connected ? `<text class="sub" x="${px}" y="${py + 45}" font-size="11">${fmt(v)} views</text>` : ''}
+      </g>`;
     });
-    s += `<rect x="${L + i * bw}" y="${T}" width="${bw}" height="${ih}" fill="transparent" data-day="${day}"/>`;
-    if (i % 5 === 4 || i === 29) s += `<text class="axis" x="${L + i * bw + bw / 2}" y="${H - 6}" text-anchor="middle" font-size="11" fill="var(--muted)">${new Date(day + 'T12:00').toLocaleDateString([], {day: 'numeric', month: 'short'})}</text>`;
-  });
-  el.innerHTML = s + '</svg>';
-  const tip = document.getElementById('tip');
-  el.querySelectorAll('[data-day]').forEach(r => {
-    r.addEventListener('mousemove', e => {
-      const day = r.dataset.day, row = by[day] || {};
-      tip.innerHTML = `<b>${new Date(day + 'T12:00').toLocaleDateString([], {weekday: 'short', day: 'numeric', month: 'short'})}</b><br>` +
-        (ids.some(id => row[id]) ? ids.filter(id => row[id]).map(id => `<span class="dot" style="display:inline-block;background:${colorOf[id]}"></span> ${esc(nameOf[id])}: ${fmt(row[id].views)} views, ${row[id].posts} clip${row[id].posts > 1 ? 's' : ''}`).join('<br>') : 'No posts');
-      tip.style.display = 'block'; tip.style.left = Math.min(e.pageX + 12, innerWidth - tip.offsetWidth - 8) + 'px'; tip.style.top = e.pageY + 12 + 'px';
-    });
-    r.addEventListener('mouseleave', () => tip.style.display = 'none');
-  });
+  }
+  // the chief of staff at the centre of the web
+  g += `<g class="node" tabindex="0" role="button" aria-label="Chief of staff" onclick="showCos()" onkeydown="if(event.key==='Enter')showCos()" style="color:var(--text)">
+    <circle cx="${CX}" cy="${CY}" r="96" fill="url(#halo)" class="breathe"/>
+    <circle cx="${CX}" cy="${CY}" r="68" fill="none" stroke="var(--node-ring)" stroke-width="1.5" stroke-dasharray="2 7" class="spin"/>
+    <circle cx="${CX}" cy="${CY}" r="55" fill="var(--node)" stroke="var(--node-ring)" stroke-width="2" class="ring"/>
+    <text class="lbl" x="${CX}" y="${CY - 4}" font-size="14">Chief of</text><text class="lbl" x="${CX}" y="${CY + 13}" font-size="14">Staff</text>
+    <text class="sub" x="${CX}" y="${CY + 31}" font-size="9" letter-spacing=".1em">SOON</text></g>`;
+  g += '</g></svg>';
+  const st = document.getElementById('stage');
+  st.innerHTML = g;
+  st.querySelector('#edges').innerHTML = lines.join('');
+  edges.forEach(e => { e.el = document.getElementById(e.id); e.len = e.el ? e.el.getTotalLength() : 0; });
+  particles = [];
+  // zoom to the web itself, leaving room for the top bar
+  const svg = st.querySelector('svg'), bb = svg.querySelector('#nodes').getBBox(), m = 36, k = Math.max(bb.width / innerWidth, bb.height / innerHeight), topPad = 72 * k, botPad = 40 * k;
+  svg.setAttribute('viewBox', `${bb.x - m} ${bb.y - m - topPad} ${bb.width + 2 * m} ${bb.height + 2 * m + topPad + botPad}`);
 }
 
-function review(d) {
-  document.getElementById('review-title').textContent = `Waiting for review (${d.review.length})`;
-  const el = document.getElementById('review');
-  if (!d.review.length) { el.innerHTML = '<div class="card empty">Nothing waiting. Safe clips post on their own.</div>'; return; }
-  el.innerHTML = d.review.map(r => `<div class="card rv" id="rv${r.edit_id}">
-    ${r.has_video ? `<video controls preload="metadata" src="/video/${r.edit_id}"></video>` : '<div class="empty">Video file missing</div>'}
-    <div class="hook">${esc(r.hook)}</div>
-    <div class="why ${r.note ? 'flag' : ''}">${esc(r.note || (r.status === 'qa_failed' ? 'Failed the render check' : 'Needs a look'))}</div>
-    <div class="sub" style="font-size:12px;margin-top:6px">${esc(nameOf[r.brand_set] || r.brand_set)} · edit ${r.edit_id} · ${ago(r.created)}</div>
-    <div class="btns">${r.pending ? `<span class="sub">${r.pending === 'approve' ? 'Approved' : 'Rejected'}: goes through within a minute</span>` : `<button class="primary" onclick="act(${r.edit_id},'approve',this)">Approve</button><button onclick="act(${r.edit_id},'reject',this)">Reject</button>`}</div>
-  </div>`).join('');
+function wrap(s, n) { const out = ['']; s.split(' ').forEach(x => { const cur = out[out.length - 1]; if ((cur + ' ' + x).trim().length > n && cur) out.push(x); else out[out.length - 1] = (cur + ' ' + x).trim(); }); return out.slice(0, 3); }
+
+// signal flowing out along the branches; busier branches carry more
+let last = 0;
+function tick(t) {
+  const dt = Math.min(64, t - last); last = t;
+  const layer = document.getElementById('parts');
+  if (layer && !reduce && !document.hidden) {
+    edges.forEach(e => { if (e.len && Math.random() < e.w * dt / 900) particles.push({e, s: 0, v: 0.00022 + Math.random() * 0.00018, el: null}); });
+    particles = particles.filter(p => {
+      p.s += p.v * dt;
+      if (p.s >= 1 || !p.e.el.isConnected) { p.el && p.el.remove(); return false; }
+      if (!p.el) { p.el = document.createElementNS('http://www.w3.org/2000/svg', 'circle'); p.el.setAttribute('r', 2.6); p.el.setAttribute('fill', p.e.c); layer.appendChild(p.el); }
+      const pt = p.e.el.getPointAtLength(p.s * p.e.len);
+      p.el.setAttribute('cx', pt.x); p.el.setAttribute('cy', pt.y); p.el.setAttribute('opacity', Math.sin(p.s * Math.PI));
+      return true;
+    });
+  }
+  requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);
+
+function toggle(id) { open.has(id) ? open.delete(id) : open.add(id); tipHide(); draw(); }
+
+const tip = document.getElementById('tip');
+function tipShow(e, html) { tip.innerHTML = html; tip.style.display = 'block'; tip.style.left = Math.min(e.clientX + 14, innerWidth - tip.offsetWidth - 8) + 'px'; tip.style.top = (e.clientY + 14) + 'px'; }
+function tipHide() { tip.style.display = 'none'; }
+
+function sheet(html, again) { document.getElementById('sheetBody').innerHTML = html; document.getElementById('sheet').classList.add('open'); sheetFor = again; }
+function closeSheet() { document.getElementById('sheet').classList.remove('open'); sheetFor = null; }
+addEventListener('keydown', e => { if (e.key === 'Escape') closeSheet(); });
+
+function showSet(id) {
+  const i = D.brand_sets.findIndex(b => b.id === id), b = D.brand_sets[i]; if (!b) return;
+  const t = b.totals, c = b.counts, posts = D.posts.filter(p => p.brand_set === id && p.platforms.some(x => x.status !== 'removed')).slice(0, 8);
+  const accts = b.accounts.filter(a => a.connected).map(a => { const p = PF[a.platform], h = (a.handle || '').replace(/^@/, '');
+    return `<a href="${p[2](h)}" target="_blank" rel="noopener"><span class="h">${p[0]} ${esc(a.handle)}</span><span class="v">${fmt(a.followers)} followers ↗</span></a>`; }).join('');
+  sheet(`<h3><span style="width:10px;height:10px;border-radius:3px;background:${color(i)};display:inline-block;flex:none"></span>${esc(b.name)}</h3>
+    <div class="chips"><span class="chip">Editor ${pad(i)}</span><span class="chip">${esc(b.format)}</span><span class="chip">${esc(b.look.captions.replace(/ \d+px/, ''))}</span>${b.theme && !/not set/i.test(b.theme) ? `<span class="chip">${esc(b.theme)}</span>` : ''}</div>
+    <div class="nums"><div><b>${fmt(t.views)}</b><span>views</span></div><div><b>${t.posts}</b><span>posted</span></div><div><b>${t.posts ? fmt(Math.round(t.views / t.posts)) : '–'}</b><span>per clip</span></div>
+      <div><b>${c.queued + c.approved}</b><span>scheduled</span></div><div><b>${c.ready + c.qa_failed}</b><span>in review</span></div><div><b>${c.excluded}</b><span>filtered</span></div></div>
+    ${b.next_post ? `<div class="sec">Next · ${when(b.next_post.slot)}</div><div style="margin-top:6px">${esc(b.next_post.hook)}</div>` : ''}
+    <div class="sec">Accounts</div><div class="plist">${accts || '<div class="p">None connected</div>'}</div>
+    <div class="sec">Recent</div><div class="plist">${posts.map(p => { const v = p.platforms.reduce((a, x) => a + (x.views || 0), 0), u = (p.platforms.find(x => x.url) || {}).url;
+      return u ? `<a href="${esc(u)}" target="_blank" rel="noopener"><span class="h">${esc(p.hook)}</span><span class="v">${fmt(v)}</span></a>` : `<div class="p"><span class="h">${esc(p.hook)}</span><span class="v">${fmt(v)}</span></div>`; }).join('') || '<div class="p">Nothing yet</div>'}</div>`, () => showSet(id));
+}
+
+function showCos() {
+  sheet(`<h3>Chief of Staff</h3><div class="chips"><span class="chip">Coming soon</span></div>
+    <div style="color:var(--text-2)">One agent over every editor. Tell it what to change (“Editor 01, switch fonts”) and it makes the change, checks quality, and keeps brand sets distinct.</div>`, null);
+}
+
+function openReview(only) {
+  const list = D.review.filter(r => !only || r.brand_set === only);
+  sheet(`<h3>Review <span class="chip">${list.length}</span></h3>
+    ${list.map(r => `<div class="rv" id="rv${r.edit_id}">
+      ${r.has_video ? `<video src="/video/${r.edit_id}#t=0.5" preload="metadata" playsinline onclick="this.paused?this.play():this.pause()"></video>` : '<div></div>'}
+      <div><div class="hk">${esc(r.hook)}</div><div class="why" title="${esc(r.note)}">${esc(r.note || 'Needs a look')}</div>
+      ${r.pending ? `<div class="done">${r.pending === 'approve' ? 'Approved' : 'Rejected'} · syncing</div>` : `<div class="btns"><button class="ok" onclick="act(${r.edit_id},'approve',this)">Approve</button><button onclick="act(${r.edit_id},'reject',this)">Reject</button></div>`}</div>
+    </div>`).join('') || '<div style="color:var(--text-2);margin-top:12px">All clear.</div>'}`, null);
 }
 
 async function act(id, action, btn) {
   btn.parentElement.querySelectorAll('button').forEach(b => b.disabled = true);
   const r = await fetch(`/api/edit/${id}/${action}`, {method: 'POST'}).then(r => r.json()).catch(e => ({error: String(e)}));
   if (r.error) { alert(r.error); btn.parentElement.querySelectorAll('button').forEach(b => b.disabled = false); return; }
-  document.getElementById('rv' + id).querySelector('.btns').innerHTML = `<span class="sub">${action === 'approve' ? (r.queued ? 'Approved: goes through within a minute' : 'Approved: posts at the next free slot') : 'Rejected'}</span>`;
-  setTimeout(load, 1500);
+  btn.parentElement.outerHTML = `<div class="done">${action === 'approve' ? 'Approved' : 'Rejected'}</div>`;
+  setTimeout(load, 1200);
 }
 
-function posts(d) {
-  const el = document.getElementById('posts');
-  if (!d.posts.length) { el.innerHTML = '<tr><td class="empty">No posts yet.</td></tr>'; return; }
-  const rows = d.posts.flatMap(p => p.platforms.map((x, i) => `<tr>
-    ${i === 0 ? `<td rowspan="${p.platforms.length}" style="white-space:nowrap">${when(p.posted_at)}</td><td rowspan="${p.platforms.length}"><span class="dot" style="display:inline-block;background:${colorOf[p.brand_set]}"></span> ${esc(nameOf[p.brand_set] || p.brand_set)}</td><td rowspan="${p.platforms.length}">${esc(p.hook)}</td>` : ''}
-    <td>${x.url ? `<a href="${esc(x.url)}" target="_blank" rel="noopener">${PF[x.platform] || x.platform}</a>` : (PF[x.platform] || x.platform)}${x.status !== 'posted' ? ` <span class="${x.status === 'failed' ? 'status-bad' : 'status-warn'}">(${esc(x.status.replace(/_/g, ' '))})</span>` : ''}</td>
-    <td class="n">${fmt(x.views)}</td><td class="n">${fmt(x.likes)}</td><td class="n">${fmt(x.comments)}</td><td class="n">${fmt(x.shares)}</td></tr>`));
-  el.innerHTML = `<tr><th>Posted</th><th>Brand set</th><th>Hook</th><th>Platform</th><th class="n">Views</th><th class="n">Likes</th><th class="n">Comments</th><th class="n">Shares</th></tr>` + rows.join('');
+let tk = 0, tkTimer = null, tkLines = [];
+function ticker() {
+  tkLines = (D.log || []).slice(0, 12).map(l => l.replace(/^\d{4}-\d\d-\d\d (\d\d:\d\d):\d\d /, '$1  ').replace(/ via zernio \([^)]*\)/, '').replace(/https?:\/\/\S+/g, '').slice(0, 140));
+  const el = document.getElementById('ticker');
+  const show = () => { if (tkLines.length) el.textContent = tkLines[tk++ % tkLines.length]; };
+  if (!tkTimer) { show(); tkTimer = setInterval(show, 4000); }
 }
 
 load();
 setInterval(load, 60000);
-addEventListener('resize', () => { clearTimeout(window._r); window._r = setTimeout(load, 200); });
+let rz; addEventListener('resize', () => { clearTimeout(rz); rz = setTimeout(() => D && draw(), 150); });
 </script>
 </body>
 </html>
