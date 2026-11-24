@@ -42,11 +42,19 @@ worker)
   printf "Hub address (e.g. https://realaf-hub.<you>.workers.dev): "; read -r URL
   printf "This machine's Cloudflare service token Client ID: "; read -r CID
   secret "Its Client Secret"; CSEC=$REPLY
-  secret "Its hub token (from the hub's Access panel)"; HTOK=$REPLY
+  secret "Its hub token (from the hub's Access panel)"; HTOK=${REPLY##* }
+  [[ ${#HTOK} -ge 40 && ${#HTOK} -le 64 ]] || { echo "That doesn't look like a hub token (it's about 43 characters). Nothing was changed."; exit 1; }
   printf '%s\n%s\n%s\n%s' "$URL" "$CID" "$CSEC" "$HTOK" | save hub_url cf_access_client_id cf_access_client_secret hub_worker_token
   unset CSEC HTOK REPLY
   echo "Saved to $S. Test it: python3 worker.py --once"
   ;;
+token)  # replace just this machine's hub token (e.g. after a wrong paste, or after Matt re-adds the worker)
+  secret "Its hub token (from the hub's Access panel)"; HTOK=${REPLY##* }
+  [[ ${#HTOK} -ge 40 && ${#HTOK} -le 64 ]] || { echo "That doesn't look like a hub token (it's about 43 characters). Nothing was changed."; exit 1; }
+  printf '%s' "$HTOK" | save hub_worker_token
+  unset HTOK REPLY
+  echo "Saved."
+  ;;
 *)
-  echo "usage: hub/setup.sh hub | worker"; exit 1 ;;
+  echo "usage: hub/setup.sh hub | worker | token"; exit 1 ;;
 esac
