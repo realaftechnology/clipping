@@ -31,5 +31,6 @@
     "since_episode": 1076,
     "model": null
   },
-  "archive_root": "~/Library/CloudStorage/GoogleDrive-<account>/My Drive/REAL AF/Real AF UGC/AI Editors Archive"
+  "archive_root": "~/Library/CloudStorage/GoogleDrive-<account>/My Drive/REAL AF/Real AF UGC/AI Editors Archive",
+  "x_grace_days": 14
 }

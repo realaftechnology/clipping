@@ -151,10 +151,8 @@ def local_copy(row):
         if os.path.getsize(tmp) != want:
             raise IOError(f"incomplete download of {os.path.basename(row['path'])}: {os.path.getsize(tmp)} of {want} bytes")
         os.replace(tmp, dst)
-        try:
-            cloud('evict', row['path'])  # the Drive app keeps its own downloaded copy: hand it back to the cloud
-        except Exception:
-            pass
+        # the Drive original stays downloaded: Grok Bot posts source clips to X from it (Matt's condition 1);
+        # source clips are offloaded only once nothing needs them any more (see offload)
     return dst
 
 
@@ -1266,6 +1264,58 @@ def cloud(cmd, path):
     return subprocess.run([tool, cmd, path], capture_output=True, text=True).stdout.strip()
 
 
+def x_posted():
+    """Source clips already on X: Grok Bot (or Natalie) adds a line with the clip's file name to posted_to_x.txt in the
+    Drive archive once Buffer has posted it."""
+    p = os.path.join(os.path.expanduser(CFG.get('archive_root', '')), 'posted_to_x.txt')
+    if not os.path.exists(p):
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        open(p, 'w').write('# One source clip file name per line, added once the clip is posted to X (Grok Bot via Buffer).\n'
+                           '# The AI editors take a source clip off this Mac only after it is listed here and no editor needs it.\n')
+    return {l.strip() for l in open(p) if l.strip() and not l.startswith('#')}
+
+
+def source_needed(c, r, posted_x, editors_on):
+    """Why a source clip must stay on this Mac, or None (Matt, 2026-11-24: 'Something should only live on my computer so
+    long as it's being used by an agent, and then it needs to be offloaded.')"""
+    name = os.path.basename(r['path'])
+    if name not in posted_x and time.time() - r['mtime'] < CFG.get('x_grace_days', 14) * 86400:
+        return 'not confirmed on X yet'      # condition 1: Grok Bot posts it to X from here
+    if c.execute("SELECT 1 FROM edits WHERE raw_id=? AND status IN ('decided','ready','qa_failed','approved','queued')", (r['id'],)).fetchone():
+        return 'an editor is still working with it'
+    if is_fresh(r['mtime']) and r['id'] not in {x[0] for x in c.execute('SELECT raw_id FROM blocked')}:
+        done = {x[0] for x in c.execute('SELECT DISTINCT editor FROM edits WHERE raw_id=?', (r['id'],))}
+        if not editors_on <= done:
+            return 'fresh, and not every editor has had it yet'
+    return None
+
+
+def free_drive_copy(path):
+    """Make a Drive file online-only. Drive refuses while a file is only partly downloaded, so finish it first."""
+    used = os.stat(path).st_blocks * 512
+    if cloud('evict', path) == 'evicted':
+        return used
+    with open(path, 'rb') as fh:
+        while fh.read(1 << 22):
+            pass
+    return used if cloud('evict', path) == 'evicted' else 0
+
+
+def offload_sources(c):
+    """Hand source clips back to the cloud (online-only in Drive) once both conditions are met. One that's needed again
+    later (an evergreen pick) is downloaded on demand and offloaded again afterwards."""
+    posted_x, freed = x_posted(), 0
+    editors_on = {e['id'] for e in editors() if e.get('enabled', True)}
+    for r in c.execute('SELECT id, path, mtime FROM raw_clips').fetchall():
+        try:
+            st = os.stat(r['path'])
+        except OSError:
+            continue
+        if st.st_blocks * 512 > 8e6 and not source_needed(c, r, posted_x, editors_on) and cloud('status', r['path']) == 'uploaded':
+            freed += free_drive_copy(r['path'])
+    return freed
+
+
 def offload():
     root = os.path.expanduser(CFG.get('archive_root', ''))
     if not root:
@@ -1306,15 +1356,15 @@ def offload():
         if not st or st[0] != 'decided':     # rendered (or gone): the tightened source isn't needed any more
             freed += os.path.getsize(f)
             os.remove(f)
-    # Drive files the pipeline read (raw clips, High Performers) stay downloaded inside the Drive app: free them
-    for base in [os.path.join(os.path.expanduser(CFG['source_root']), f) for f in CFG['source_folders']] + [os.path.expanduser(CFG.get('references_root', ''))]:
+    freed += offload_sources(c)
+    # High Performers the pipeline studied stay downloaded inside the Drive app: free them
+    for base in [os.path.expanduser(CFG.get('references_root', ''))]:
         for r_, _, fs in os.walk(base) if base and os.path.isdir(base) else []:
             for fn in fs:
                 fp = os.path.join(r_, fn)
                 # skip Drive's own ~4 MB preview pieces (it won't free those); real downloads are whole clips
                 if fn.lower().endswith(('.mp4', '.mov')) and os.stat(fp).st_blocks * 512 > 8e6 and cloud('status', fp) == 'uploaded':
-                    freed += os.stat(fp).st_blocks * 512
-                    cloud('evict', fp)
+                    freed += free_drive_copy(fp)
     if moved or freed > 50e6:
         free = shutil.disk_usage(WORK).free / 1e9
         log(f'offload: {moved} clips moved to Drive, {freed / 1e9:.2f} GB freed locally ({free:.0f} GB free on disk)')
