@@ -94,6 +94,19 @@ body { margin: 0; background: radial-gradient(ellipse at 54% 50%, var(--bg-2), v
 .tabs button { flex: 1; font: inherit; font-size: 13px; border: 0; background: none; color: var(--text-2); padding: 7px; border-radius: 8px; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 6px; }
 .tabs button.on { background: var(--panel); color: var(--text); box-shadow: 0 1px 3px rgba(0,0,0,.25); }
 .tabs .n { background: var(--flag); color: #111; font-weight: 700; border-radius: 999px; padding: 0 7px; font-size: 11px; }
+.thumb { position: relative; width: 96px; cursor: pointer; }
+.thumb::after { content: ""; position: absolute; left: 50%; top: 50%; width: 34px; height: 34px; margin: -17px 0 0 -17px; border-radius: 50%;
+  background: rgba(0,0,0,.55) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M9 7l9 5-9 5z' fill='white'/%3E%3C/svg%3E") center/18px no-repeat; }
+.thumb video { pointer-events: none; }
+.player { position: fixed; inset: 0; z-index: 30; display: none; align-items: center; justify-content: center; background: rgba(0,0,0,.72); backdrop-filter: blur(6px); padding: 16px; }
+.player.open { display: flex; }
+.pbox { background: var(--panel); border: 1px solid var(--line); border-radius: 18px; padding: 14px; width: min(420px, 100%); max-height: 100%; display: flex; flex-direction: column; gap: 10px; position: relative; }
+.pbox video { width: 100%; max-height: calc(100vh - 220px); aspect-ratio: 9/16; background: #000; border-radius: 12px; object-fit: contain; }
+.pbox .hk { font-weight: 650; font-size: 16px; padding-right: 28px; }
+.pbox .why { font-size: 12px; color: var(--text-2); }
+.pbox .why::before { content: "⚑ "; color: var(--flag); }
+.pbox .btns { margin: 0; } .pbox .btns button { flex: 1; font-size: 15px; padding: 11px; border-radius: 10px; }
+.pbox .x { top: 8px; right: 6px; }
 .done { font-size: 12px; color: var(--text-2); margin-top: 8px; }
 @media (max-width: 720px) {
   .stats { gap: 14px; } .stat b { font-size: 16px; } .brand .t { display: none; }
@@ -111,6 +124,7 @@ body { margin: 0; background: radial-gradient(ellipse at 54% 50%, var(--bg-2), v
 <div id="stage"></div>
 <div class="ticker" id="ticker"></div>
 <div class="tip" id="tip"></div>
+<div class="player" id="player" onclick="if(event.target===this)closePlayer()"><div class="pbox" id="pbox"></div></div>
 <aside class="sheet" id="sheet"><button class="x" onclick="closeSheet()" aria-label="Close">×</button><div id="sheetBody"></div></aside>
 
 <script>
@@ -269,7 +283,27 @@ function tipHide() { tip.style.display = 'none'; }
 
 function sheet(html, again) { document.getElementById('sheetBody').innerHTML = html; document.getElementById('sheet').classList.add('open'); sheetFor = again; }
 function closeSheet() { document.getElementById('sheet').classList.remove('open'); sheetFor = null; }
-addEventListener('keydown', e => { if (e.key === 'Escape') closeSheet(); });
+addEventListener('keydown', e => { if (e.key === 'Escape') { if (document.getElementById('player').classList.contains('open')) closePlayer(); else closeSheet(); } });
+
+// big player for one review clip, with the decision right under it
+function openPlayer(id) {
+  const r = D.review.find(x => x.edit_id === id); if (!r) return;
+  document.getElementById('pbox').innerHTML = `<button class="x" onclick="closePlayer()" aria-label="Close">×</button>
+    <div class="hk">${esc(r.hook)}</div>
+    <video src="/video/${id}" controls autoplay playsinline></video>
+    ${r.note ? `<div class="why">${esc(r.note)}</div>` : ''}
+    ${r.pending ? `<div class="done">${r.pending === 'approve' ? 'Approved' : 'Rejected'} · syncing</div>`
+      : `<div class="btns"><button class="ok" onclick="decide(${id},'approve',this)">Approve</button><button onclick="decide(${id},'reject',this)">Reject</button></div>`}`;
+  document.getElementById('player').classList.add('open');
+}
+function closePlayer() { const p = document.getElementById('player'), v = p.querySelector('video'); v && v.pause(); p.classList.remove('open'); document.getElementById('pbox').innerHTML = ''; }
+async function decide(id, action, btn) {
+  btn.parentElement.querySelectorAll('button').forEach(b => b.disabled = true);
+  const r = await fetch(`/api/edit/${id}/${action}`, {method: 'POST'}).then(r => r.json()).catch(e => ({error: String(e)}));
+  if (r.error) { alert(r.error); btn.parentElement.querySelectorAll('button').forEach(b => b.disabled = false); return; }
+  btn.parentElement.outerHTML = `<div class="done" style="font-size:14px;text-align:center">${action === 'approve' ? 'Approved ✓' : 'Rejected'}</div>`;
+  setTimeout(() => { closePlayer(); load(); }, 700);
+}
 
 function showSet(id, tab = 'overview') {
   const i = D.brand_sets.findIndex(b => b.id === id), b = D.brand_sets[i]; if (!b) return;
@@ -298,7 +332,7 @@ function showCos() {
 
 function reviewList(list) {
   return `${list.map(r => `<div class="rv" id="rv${r.edit_id}">
-      ${r.has_video ? `<video src="/video/${r.edit_id}#t=0.5" preload="metadata" playsinline onclick="this.paused?this.play():this.pause()"></video>` : '<div></div>'}
+      ${r.has_video ? `<div class="thumb" role="button" tabindex="0" aria-label="Play ${esc(r.hook)}" onclick="openPlayer(${r.edit_id})" onkeydown="if(event.key==='Enter')openPlayer(${r.edit_id})"><video src="/video/${r.edit_id}#t=0.5" preload="metadata" playsinline muted></video></div>` : '<div></div>'}
       <div><div class="hk">${esc(r.hook)}</div><div class="why" title="${esc(r.note)}">${esc(r.note || 'Needs a look')}</div>
       ${r.pending ? `<div class="done">${r.pending === 'approve' ? 'Approved' : 'Rejected'} · syncing</div>` : `<div class="btns"><button class="ok" onclick="act(${r.edit_id},'approve',this)">Approve</button><button onclick="act(${r.edit_id},'reject',this)">Reject</button></div>`}</div>
     </div>`).join('') || '<div style="color:var(--text-2);margin-top:12px">All clear.</div>'}`;
