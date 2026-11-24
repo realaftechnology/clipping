@@ -112,6 +112,14 @@ body { margin: 0; background: radial-gradient(ellipse at 54% 50%, var(--bg-2), v
 .pbox .why::before { content: "⚑ "; color: var(--flag); }
 .pbox .btns { margin: 0; } .pbox .btns button { flex: 1; font-size: 15px; padding: 11px; border-radius: 10px; }
 .pbox .x { top: 8px; right: 6px; }
+.whyf { margin-top: 8px; }
+.whyf .q { font-weight: 600; font-size: 13px; margin-bottom: 6px; }
+.wchips { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 7px; }
+.wchips button { font: inherit; font-size: 11px; padding: 4px 9px; border-radius: 999px; border: 1px solid var(--line); background: var(--bg-2); color: var(--text-2); cursor: pointer; }
+.wchips button.on { border-color: var(--bad); color: var(--text); background: color-mix(in srgb, var(--bad) 18%, transparent); }
+.whyf textarea { width: 100%; font: inherit; font-size: 13px; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg-2); color: var(--text); resize: vertical; }
+.whyf .btns button.no { background: var(--bad); border-color: var(--bad); color: #fff; }
+.pbox .whyf .btns button { flex: 1; }
 .done { font-size: 12px; color: var(--text-2); margin-top: 8px; }
 @media (max-width: 720px) {
   .stats { gap: 14px; } .stat b { font-size: 16px; } .brand .t { display: none; }
@@ -154,7 +162,7 @@ async function load() {
   top_(); ticker();
   const s = JSON.stringify([D.brand_sets, D.posts.map(p => p.platforms.map(x => x.views))]);
   if (s !== sig) { sig = s; draw(); }  // redraw only when something changed, so the web keeps flowing
-  if (sheetFor) sheetFor();
+  if (sheetFor && !document.querySelector('.whyf')) sheetFor();  // don't wipe a half-written reason
 }
 
 function bsViews(b, pf) { return D.posts.filter(p => p.brand_set === b.id).flatMap(p => p.platforms).filter(x => x.platform === pf && x.status === 'posted').reduce((a, x) => a + (x.views || 0), 0); }
@@ -302,13 +310,13 @@ function openPlayer(id) {
     <video src="/video/${id}" controls autoplay playsinline></video>
     ${r.note ? `<div class="why">${esc(r.note)}</div>` : ''}
     ${r.pending ? `<div class="done">${r.pending === 'approve' ? 'Approved' : 'Rejected'} · syncing</div>`
-      : `<div class="btns"><button class="ok" onclick="decide(${id},'approve',this)">Approve</button><button onclick="decide(${id},'reject',this)">Reject</button></div>`}`;
+      : `<div class="btns"><button class="ok" onclick="decide(${id},'approve',this)">Approve</button><button onclick="askWhy(${id},this,true)">Reject</button></div>`}`;
   document.getElementById('player').classList.add('open');
 }
 function closePlayer() { const p = document.getElementById('player'), v = p.querySelector('video'); v && v.pause(); p.classList.remove('open'); document.getElementById('pbox').innerHTML = ''; }
 async function decide(id, action, btn) {
   btn.parentElement.querySelectorAll('button').forEach(b => b.disabled = true);
-  const r = await fetch(`/api/edit/${id}/${action}`, {method: 'POST'}).then(r => r.json()).catch(e => ({error: String(e)}));
+  const r = await send(id, action);
   if (r.error) { alert(r.error); btn.parentElement.querySelectorAll('button').forEach(b => b.disabled = false); return; }
   btn.parentElement.outerHTML = `<div class="done" style="font-size:14px;text-align:center">${action === 'approve' ? 'Approved ✓' : 'Rejected'}</div>`;
   setTimeout(() => { closePlayer(); load(); }, 700);
@@ -344,16 +352,49 @@ function reviewList(list) {
   return `${list.map(r => `<div class="rv" id="rv${r.edit_id}">
       ${r.has_video ? `<div class="thumb" role="button" tabindex="0" aria-label="Play ${esc(r.hook)}" onclick="openPlayer(${r.edit_id})" onkeydown="if(event.key==='Enter')openPlayer(${r.edit_id})"><video src="/video/${r.edit_id}#t=0.5" preload="metadata" playsinline muted></video></div>` : '<div></div>'}
       <div><div class="hk">${esc(r.hook)}</div><div class="why" title="${esc(r.note)}">${esc(r.note || 'Needs a look')}</div>
-      ${r.pending ? `<div class="done">${r.pending === 'approve' ? 'Approved' : 'Rejected'} · syncing</div>` : `<div class="btns"><button class="ok" onclick="act(${r.edit_id},'approve',this)">Approve</button><button onclick="act(${r.edit_id},'reject',this)">Reject</button></div>`}</div>
+      ${r.pending ? `<div class="done">${r.pending === 'approve' ? 'Approved' : 'Rejected'} · syncing</div>` : `<div class="btns"><button class="ok" onclick="act(${r.edit_id},'approve',this)">Approve</button><button onclick="askWhy(${r.edit_id},this,false)">Reject</button></div>`}</div>
     </div>`).join('') || '<div style="color:var(--text-2);margin-top:12px">All clear.</div>'}`;
 }
 
 async function act(id, action, btn) {
   btn.parentElement.querySelectorAll('button').forEach(b => b.disabled = true);
-  const r = await fetch(`/api/edit/${id}/${action}`, {method: 'POST'}).then(r => r.json()).catch(e => ({error: String(e)}));
+  const r = await send(id, action);
   if (r.error) { alert(r.error); btn.parentElement.querySelectorAll('button').forEach(b => b.disabled = false); return; }
   btn.parentElement.outerHTML = `<div class="done">${action === 'approve' ? 'Approved' : 'Rejected'}</div>`;
   setTimeout(load, 1200);
+}
+
+function send(id, action, reason = '') {
+  return fetch(`/api/edit/${id}/${action}`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({reason})})
+    .then(r => r.json()).catch(e => ({error: String(e)}));
+}
+
+// Rejecting asks why. The reason is saved and every editor reads past reasons before picking its next clip and hook.
+const WHY = ['Wrong subject for this account', 'Hook gives away the answer', "Hook doesn't match the clip", 'Clip is weak or slow', 'Cut starts or ends badly', 'Music is wrong', 'Too political'];
+function askWhy(id, btn, inPlayer) {
+  const box = btn.parentElement;
+  box.outerHTML = `<div class="whyf" data-id="${id}">
+    <div class="q">Why reject it?</div>
+    <div class="wchips">${WHY.map(w => `<button type="button" onclick="pickWhy(this)">${w}</button>`).join('')}</div>
+    <textarea rows="3" placeholder="Say it in your own words. The editors learn from this."></textarea>
+    <div class="btns"><button class="no" onclick="sendWhy(${id},this,${inPlayer})">Reject</button><button onclick="${inPlayer ? `openPlayer(${id})` : 'sheetFor && sheetFor()'}">Cancel</button></div>
+  </div>`;
+  const ta = document.querySelector(`.whyf[data-id="${id}"] textarea`); ta && ta.focus();
+}
+function pickWhy(chip) {
+  const ta = chip.closest('.whyf').querySelector('textarea'), t = chip.textContent;
+  chip.classList.toggle('on');
+  ta.value = chip.classList.contains('on') ? (ta.value ? ta.value.replace(/\.?\s*$/, '. ') : '') + t : ta.value.replace(t, '').replace(/^\.\s*|\.\s*\.\s*/g, '').trim();
+  ta.focus();
+}
+async function sendWhy(id, btn, inPlayer) {
+  const f = btn.closest('.whyf'), reason = f.querySelector('textarea').value.trim();
+  if (!reason) { f.querySelector('textarea').placeholder = 'A few words on why, so the editors can learn'; f.querySelector('textarea').focus(); return; }
+  f.querySelectorAll('button,textarea').forEach(b => b.disabled = true);
+  const r = await send(id, 'reject', reason);
+  if (r.error) { alert(r.error); f.querySelectorAll('button,textarea').forEach(b => b.disabled = false); return; }
+  f.outerHTML = `<div class="done"${inPlayer ? ' style="font-size:14px;text-align:center"' : ''}>Rejected · reason saved</div>`;
+  setTimeout(() => { if (inPlayer) closePlayer(); load(); }, inPlayer ? 900 : 1200);
 }
 
 let tk = 0, tkTimer = null, tkLines = [];

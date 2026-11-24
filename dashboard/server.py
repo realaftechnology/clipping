@@ -187,10 +187,14 @@ class H(BaseHTTPRequestHandler):
         if not m:
             return self.send(404, {'error': 'not found'})
         eid, action = int(m.group(1)), m.group(2)
+        n = int(self.headers.get('Content-Length') or 0)
+        reason = (json.loads(self.rfile.read(n) or b'{}').get('reason') or '').strip()[:1000] if n else ''
+        if action == 'reject' and not reason:
+            return self.send(400, {'error': 'Say why it was rejected'})
         row = fw.db().execute('SELECT status FROM edits WHERE id=?', (eid,)).fetchone()
         if not row or row['status'] not in ('ready', 'qa_failed'):
             return self.send(409, {'error': f'edit {eid} is not waiting for review'})
-        out = subprocess.run([sys.executable, os.path.join(ROOT, 'flywheel.py'), action, str(eid)], capture_output=True, text=True)
+        out = subprocess.run([sys.executable, os.path.join(ROOT, 'flywheel.py'), action, str(eid), reason], capture_output=True, text=True)
         if out.returncode:
             return self.send(500, {'error': out.stderr[-400:]})
         self.send(200, {'ok': True, 'edit_id': eid, 'status': 'approved' if action == 'approve' else 'rejected'})
@@ -225,7 +229,7 @@ def sync_once():
     for a in acts:
         row = fw.db().execute('SELECT status FROM edits WHERE id=?', (a['edit_id'],)).fetchone()
         if row and row['status'] in ('ready', 'qa_failed'):
-            subprocess.run([sys.executable, os.path.join(ROOT, 'flywheel.py'), a['action'], str(a['edit_id'])], capture_output=True)
+            subprocess.run([sys.executable, os.path.join(ROOT, 'flywheel.py'), a['action'], str(a['edit_id']), a.get('reason', '')], capture_output=True)
             fw.log(f"dashboard: edit {a['edit_id']} {a['action']}d on the hosted dashboard")
         done.append(a['edit_id'])
     if done:

@@ -306,11 +306,14 @@ class H(BaseHTTPRequestHandler):
             if not self.signed_in():
                 return self.send(401, {'error': 'sign in'})
             eid, action = int(m.group(1)), m.group(2)
+            reason = (json.loads(self.body(8192) or b'{}').get('reason') or '').strip()[:1000]
+            if action == 'reject' and not reason:
+                return self.send(400, {'error': 'Say why it was rejected'})
             if not any(r['edit_id'] == eid for r in read_json('snapshot.json', {}).get('review', [])):
                 return self.send(409, {'error': f'edit {eid} is not waiting for review'})
             with LOCK:
                 acts = [a for a in read_json('actions.json', []) if a['edit_id'] != eid]
-                acts.append({'edit_id': eid, 'action': action, 'at': time.time()})
+                acts.append({'edit_id': eid, 'action': action, 'reason': reason, 'at': time.time()})
                 write_json('actions.json', acts)
             return self.send(200, {'ok': True, 'edit_id': eid, 'queued': True})
         if not self.machine():

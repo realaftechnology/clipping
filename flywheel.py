@@ -7,7 +7,7 @@ Architecture: Projects/Real AF/Context/Thoughts/2026-11-23 Short-Form Content Fl
   flywheel.py status            counts by folder and state
   flywheel.py decide <raw_id> <editor> [--manual file.json]   hook, song, caption (Claude, headless)
   flywheel.py render <edit_id>  render + QA one decided edit
-  flywheel.py approve <edit_id> | reject <edit_id>             review gate while auto_post is false
+  flywheel.py approve <edit_id> [note] | reject <edit_id> <why>  review gate; reasons teach the editors
   flywheel.py takedown <raw_id|edit:id|post url> [reason]    pull a clip from every account
   flywheel.py accounts          list accounts connected in Zernio (ids for editor.json)
   flywheel.py queue | post | track                              schedule ready edits, publish due posts, pull metrics
@@ -49,6 +49,8 @@ def db():
     CREATE TABLE IF NOT EXISTS metrics(
       post_id INTEGER REFERENCES posts(id), taken_at REAL, age_h REAL, views INTEGER, likes INTEGER, comments INTEGER,
       shares INTEGER, saves INTEGER, avg_watch REAL, follows INTEGER, raw TEXT);
+    CREATE TABLE IF NOT EXISTS feedback(
+      id INTEGER PRIMARY KEY, edit_id INTEGER REFERENCES edits(id), editor TEXT, action TEXT, reason TEXT, at REAL);
     CREATE TABLE IF NOT EXISTS post_stats(
       post_id INTEGER PRIMARY KEY REFERENCES posts(id), taken_at REAL, views INTEGER, likes INTEGER, comments INTEGER,
       shares INTEGER, saves INTEGER, raw TEXT);
@@ -251,6 +253,9 @@ Natalie (human editor) cut this raw clip. Decide the text hook, the music bed an
 This editor's playbook (lessons from past posts):
 {playbook}
 
+Review decisions so far (Matt and Natalie):
+{review_lessons(ed['id'])}
+
 Raw clip: {os.path.basename(row['path'])} (folder {row['folder']}, {prep_row['duration']:.0f} s)
 Transcript (auto, may lack punctuation):
 {q3}{prep_row['transcript']}{q3}
@@ -369,6 +374,40 @@ def render(edit_id):
         subprocess.run(['cp', out, rd], check=True)
     log(f"{e['editor']} render edit {edit_id} -> {status} {os.path.basename(out)} {q}")
     return status
+
+
+def review(edit_id, action, reason=''):
+    """A human's review decision. Every rejection keeps its reason, and so does approving a clip the editor had
+    flagged; both feed the editors' next decisions (review_lessons), so fewer clips get rejected over time."""
+    c = db()
+    e = c.execute('SELECT editor, note FROM edits WHERE id=?', (edit_id,)).fetchone()
+    if not e:
+        sys.exit(f'no edit {edit_id}')
+    status = 'approved' if action == 'approve' else 'rejected'
+    c.execute('UPDATE edits SET status=?, updated=? WHERE id=?', (status, time.time(), edit_id))
+    if action == 'reject' or e['note']:
+        c.execute('INSERT INTO feedback(edit_id,editor,action,reason,at) VALUES(?,?,?,?,?)', (edit_id, e['editor'], action, reason.strip(), time.time()))
+    c.commit()
+    log(f"edit {edit_id} -> {status}" + (f': {reason.strip()}' if reason.strip() else ''))
+
+
+def review_lessons(eid, n=25):
+    """Past review decisions, for the decide prompt."""
+    c = db()
+    rows = c.execute("SELECT f.*, e.hook, e.note, p.transcript FROM feedback f JOIN edits e ON e.id=f.edit_id "
+                     "LEFT JOIN preps p ON p.raw_id=e.raw_id ORDER BY f.at DESC LIMIT ?", (n * 2,)).fetchall()
+    rej = [r for r in rows if r['action'] == 'reject'][:n]
+    ok = [r for r in rows if r['action'] == 'approve'][:10]
+    tag = lambda r: '' if r['editor'] == eid else f" ({r['editor']})"
+    out = []
+    if rej:
+        out.append('Clips a human REJECTED, with their reason. Learn the pattern: skip clips like these (usable=false) '
+                   'or write the hook differently, so this doesn\'t happen again:')
+        out += [f"- hook \"{r['hook']}\"{tag(r)}; clip: \"{(r['transcript'] or '')[:160]}\"; reason: {r['reason'] or '(none given)'}" for r in rej]
+    if ok:
+        out.append('Clips a human APPROVED even though they were flagged. These flags were too cautious; don\'t raise them for similar clips:')
+        out += [f"- hook \"{r['hook']}\"{tag(r)}; flagged: {r['note']}" + (f"; note: {r['reason']}" if r['reason'] else '') for r in ok]
+    return '\n'.join(out) or '(no review decisions yet)'
 
 
 def set_status(edit_id, status):
@@ -653,6 +692,6 @@ if __name__ == '__main__':
     a = sys.argv[1:] or ['']
     cmds = {'takedown': lambda: takedown(a[1], ' '.join(a[2:])), 'removed': lambda: removed(a[1]), 'scan': scan, 'status': status, 'accounts': accounts, 'reconcile': reconcile, 'queue': queue, 'post': post, 'track': track, 'stats': stats, 'run': run,
             'prep': lambda: prep(a[1]), 'render': lambda: render(int(a[1])),
-            'approve': lambda: set_status(int(a[1]), 'approved'), 'reject': lambda: set_status(int(a[1]), 'rejected'),
+            'approve': lambda: review(int(a[1]), 'approve', ' '.join(a[2:])), 'reject': lambda: review(int(a[1]), 'reject', ' '.join(a[2:])),
             'decide': lambda: decide(int(a[1]), a[2], a[a.index('--manual') + 1] if '--manual' in a else None)}
     cmds.get(a[0], lambda: sys.exit(__doc__))()
