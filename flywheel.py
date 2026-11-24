@@ -71,6 +71,13 @@ def db():
         c.execute('ALTER TABLE edits ADD COLUMN archived_at REAL')
     if 'editor' not in [r[1] for r in c.execute('PRAGMA table_info(rules)')]:
         c.execute('ALTER TABLE rules ADD COLUMN editor TEXT')  # NULL = every editor; set only for stylistic rules
+    if 'uid' not in [r[1] for r in c.execute('PRAGMA table_info(rules)')]:
+        # central hub: rules learned on other machines or approved from chat arrive with a uid; local ones have none
+        c.execute('ALTER TABLE rules ADD COLUMN uid TEXT')
+        c.execute('CREATE UNIQUE INDEX IF NOT EXISTS rules_uid ON rules(uid)')
+    # review decisions made on other machines' editors (central hub), so every editor learns from every review
+    c.execute('CREATE TABLE IF NOT EXISTS net_feedback(uid TEXT PRIMARY KEY, editor TEXT, action TEXT, reason TEXT, hook TEXT, '
+              'note TEXT, transcript TEXT, at REAL, origin TEXT)')
     return c
 
 
@@ -191,7 +198,10 @@ def prep(arg):
 
 
 # ---------- editors ----------
-SPEC = os.path.join(HERE, '..', 'Context', 'AI Editors - Output Spec.md')
+# The private project notes. On another worker machine they live wherever config.local.json's context_dir says (the hub
+# keeps them in step: the Output Spec, content profile and performance playbook are shared by every machine).
+CONTEXT = os.path.expanduser(CFG.get('context_dir') or os.path.join(HERE, '..', 'Context'))
+SPEC = os.path.join(CONTEXT, 'AI Editors - Output Spec.md')
 # Hard exclusion keywords (Matt, 2026-11-23): any mention removes the clip for every editor, before Claude is asked.
 EXCLUDE_WORDS = re.compile(r'\b(israel\w*|jew|jews|jewish|judaism|zionis\w*|zion|holocaust|synagogue\w*|rabbi\w*|anti-?semit\w*|'
                            r'rothschild\w*|soros|globalist\w*|kosher|gaza|palestin\w*|netanyahu|idf|mossad|aipac|hamas)\b', re.I)
@@ -300,6 +310,20 @@ def sourced_note(row):
             "payoff, then tighten it as usual. Judge opening_raises_question on the sentence you start on.\n")
 
 
+def editor_notes(eid):
+    """Behaviour notes given to this editor in chat on the central hub (directives.py). They shape how it works and
+    looks; they never override the hard exclusions, risk flags or the review gate."""
+    try:
+        import directives
+        notes = directives.active_notes(eid)
+    except Exception:
+        notes = []
+    if not notes:
+        return ''
+    return ('\nDirectives for you from Matt\'s team (follow them; the hard exclusions, risk flags and rules above still come first):\n'
+            + '\n'.join(f"- {n['text']}" for n in notes) + '\n')
+
+
 def decide_prompt(row, prep_row, ed, pool):
     spec = open(SPEC).read()
     rules = spec[spec.index('## Hook rules'):spec.index('## Choices the editor makes per clip')]
@@ -321,7 +345,7 @@ Content profile: what Matt approves and rejects, learned from every review decis
 
 Standing rules learned from review (follow every one):
 {standing_rules(ed['id'])}
-
+{editor_notes(ed['id'])}
 Review decisions so far (Matt and Natalie):
 {review_lessons(ed['id'])}
 
@@ -466,7 +490,7 @@ def render(edit_id, retried=False):
     os.makedirs(out_dir, exist_ok=True)
     out = os.path.join(out_dir, f"{ep}_{ed['name']}_{row['subject'].strip()}_v{e['version']}.mp4")
     d = json.loads(e['decision'])
-    env, src_dur = dict(os.environ), pr['duration']
+    env, src_dur = dict(os.environ, AI_EDITORS_WORK=WORK), pr['duration']  # render_clip.sh uses this machine's work_dir
     if d.get('trim'):
         t = tighten(e, row, pr, d['trim'])
         if t:
@@ -537,6 +561,9 @@ def review_lessons(eid, n=25):
     c = db()
     rows = c.execute("SELECT f.*, e.hook, e.note, p.transcript FROM feedback f JOIN edits e ON e.id=f.edit_id "
                      "LEFT JOIN preps p ON p.raw_id=e.raw_id ORDER BY f.at DESC LIMIT ?", (n * 2,)).fetchall()
+    # review decisions on other machines' editors (central hub) count the same
+    rows = sorted(list(rows) + c.execute('SELECT action, reason, editor, hook, note, transcript, at FROM net_feedback ORDER BY at DESC LIMIT ?',
+                                         (n * 2,)).fetchall(), key=lambda r: -r['at'])
     rej = [r for r in rows if r['action'] == 'reject'][:n]
     ok = [r for r in rows if r['action'] == 'approve' and not (r['note'] or '').startswith('Re-edited')][:10]
     tag = lambda r: '' if r['editor'] == eid else f" ({r['editor']})"
@@ -684,6 +711,27 @@ def reedit(e, ch, why):
     return cur.lastrowid
 
 
+def reedit_cmd(edit_id, change_json):
+    """A re-edit asked for in chat on the central hub (directives.py, action reedit): new hook and/or song for a clip
+    that hasn't posted. The new version always goes to review; a scheduled old version is taken off the schedule."""
+    c = db()
+    e = c.execute('SELECT * FROM edits WHERE id=?', (edit_id,)).fetchone()
+    ch = json.loads(change_json)
+    if not e or e['editor'] != ch.get('editor'):
+        sys.exit(f"edit {edit_id} isn't one of {ch.get('editor')}'s clips")
+    if e['status'] not in ('ready', 'qa_failed', 'approved', 'queued'):
+        sys.exit(f"edit {edit_id} is {e['status']}; only clips that haven't posted can be re-edited")
+    if e['status'] in ('approved', 'queued'):
+        n = c.execute("UPDATE posts SET status='cancelled' WHERE edit_id=? AND status='queued'", (edit_id,)).rowcount
+        c.execute("UPDATE edits SET status='superseded', updated=? WHERE id=?", (time.time(), edit_id))
+        c.commit()
+        log(f'edit {edit_id} taken off the schedule ({n} queued posts cancelled) for a re-edit from chat')
+    new = reedit(e, {'hook': ch.get('hook', ''), 'song': ch.get('song', ''), 'what_changed': ch.get('what_changed', '')},
+                 f"directive from {ch.get('by', 'chat')}")
+    log(f'edit {edit_id} re-edited from chat as edit {new}')
+    print(json.dumps({'new_edit': new}))
+
+
 def triage(edit_id):
     lock = open(os.path.join(WORK, '.triage.lock'), 'w')
     fcntl.flock(lock, fcntl.LOCK_EX)  # one rejection at a time
@@ -725,7 +773,7 @@ def triage(edit_id):
 
 
 # ---------- the content profile: what Matt approves and rejects, for every editor ----------
-PROFILE = os.path.join(HERE, '..', 'Context', 'AI Editors - Content Profile.md')  # private project notes, not the public repo
+PROFILE = os.path.join(CONTEXT, 'AI Editors - Content Profile.md')  # private project notes, not the public repo
 
 
 def content_profile():
@@ -740,8 +788,11 @@ def update_profile():
     """Rewrite the content profile from every review decision so far. Matt's goal: editors so tuned that almost nothing
     needs review, and what does almost always gets approved."""
     c = db()
-    rows = c.execute("SELECT f.action, f.reason, f.editor, e.hook, e.note, p.transcript FROM feedback f JOIN edits e ON e.id=f.edit_id "
+    rows = c.execute("SELECT f.action, f.reason, f.editor, e.hook, e.note, p.transcript, f.at FROM feedback f JOIN edits e ON e.id=f.edit_id "
                      "LEFT JOIN preps p ON p.raw_id=e.raw_id ORDER BY f.at").fetchall()
+    # plus review decisions on other machines' editors (central hub)
+    rows = sorted(list(rows) + c.execute('SELECT action, reason, editor, hook, note, transcript, at FROM net_feedback').fetchall(),
+                  key=lambda r: r['at'])
     dec = '\n'.join(f"- {r['action'].upper()} | hook \"{r['hook']}\" | editor flagged: {r['note'] or 'nothing'} | Matt's reason: {r['reason'] or '(none)'}"
                     f" | clip: \"{(r['transcript'] or '')[:400]}\"" for r in rows[-150:])
     prompt = f"""You keep the CONTENT PROFILE for a network of AI short-form editors posting Andy Frisella clips.
@@ -797,7 +848,7 @@ def learn(edit_id, action):
 # "if editor 1 has a video that goes viral and there's a pattern that starts to play out of similar videos going viral
 # and similar videos flopping, then all 9 other editors should also learn from that information without changing their
 # stylistic choices"
-PLAYBOOK = os.path.join(HERE, '..', 'Context', 'AI Editors - Performance Playbook.md')  # private notes, not the public repo
+PLAYBOOK = os.path.join(CONTEXT, 'AI Editors - Performance Playbook.md')  # private notes, not the public repo
 NETWORK_H, STYLE_H = '## Every editor', '## Style notes: '
 
 
@@ -1373,6 +1424,8 @@ def offload():
 # ---------- queue / post / track ----------
 def backend(name):
     sys.path.insert(0, HERE)
+    if name == 'zernio' and CFG.get('zernio_via_hub'):  # central hub: the Zernio key lives on the hub, which posts for us
+        name = 'hub'
     return importlib.import_module(f'backends.{name}')
 
 
@@ -1782,7 +1835,7 @@ def status():
 if __name__ == '__main__':
     a = sys.argv[1:] or ['']
     cmds = {'takedown': lambda: takedown(a[1], ' '.join(a[2:])), 'removed': lambda: removed(a[1]), 'scan': scan, 'status': status, 'accounts': accounts, 'reconcile': reconcile, 'queue': queue, 'post': post, 'track': track, 'stats': stats, 'run': run, 'triage': lambda: triage(int(a[1])), 'offload': offload, 'check': lambda: check_cmd([int(x) for x in a[1:]]), 'learn': lambda: learn(int(a[1]), a[2]), 'profile': update_profile, 'learn-performance': lambda: learn_performance('--force' in a), 'refs': lambda: refs_cmd(a[1] if len(a) > 1 else None),
-            'prep': lambda: prep(a[1]), 'render': lambda: render(int(a[1])),
+            'prep': lambda: prep(a[1]), 'render': lambda: render(int(a[1])), 'reedit': lambda: reedit_cmd(int(a[1]), a[2]),
             'approve': lambda: review(int(a[1]), 'approve', ' '.join(a[2:])), 'reject': lambda: review(int(a[1]), 'reject', ' '.join(a[2:])),
             'decide': lambda: decide(int(a[1]), a[2], a[a.index('--manual') + 1] if '--manual' in a else None)}
     cmds.get(a[0], lambda: sys.exit(__doc__))()

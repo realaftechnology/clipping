@@ -12,3 +12,9 @@ __pycache__/
 dashboard/data/
 .DS_Store
 bin/cloud
+
+# central hub: local test data
+hub/data/
+# chat directive notes (private)
+notes.json
+hub_state.json

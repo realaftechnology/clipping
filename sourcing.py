@@ -196,7 +196,7 @@ def sourcing_lessons(n=40):
 
 
 # ---------- the sourcing profile: what Matt approves and rejects, rewritten after every review ----------
-PROFILE = os.path.join(fw.HERE, '..', 'Context', 'AI Editors - Sourcing Profile.md')  # private project notes, not the public repo
+PROFILE = os.path.join(fw.CONTEXT, 'AI Editors - Sourcing Profile.md')  # private project notes, not the public repo
 PROFILE_SCHEMA = {'type': 'object', 'additionalProperties': False, 'required': ['profile', 'changed'],
                   'properties': {'profile': {'type': 'string'}, 'changed': {'type': 'string'}}}
 

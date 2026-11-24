@@ -3,15 +3,15 @@
 # usage: render_clip.sh <editor> <raw_id> "<HOOK TITLE>" <music file in catalog> <music start s> <out.mp4>
 # Look comes from editors/<editor>/style.json; fonts must be in fonts.json.
 set -e
-HERE=${0:A:h}; ROOT=${HERE:h}; WORK=~/Movies/"AI Editors"
+HERE=${0:A:h}; ROOT=${HERE:h}; WORK=${AI_EDITORS_WORK:-$HOME/Movies/AI Editors}  # AI_EDITORS_WORK: a test copy
 editor=$1; id=$2; hook=$3; song=$4; mstart=$5; out=$6
 STYLE=$ROOT/editors/$editor/style.json; [[ -f $STYLE ]] || { echo "no style: $STYLE"; exit 1; }
 sty() { python3 -c "import json,sys;s=json.load(open(sys.argv[1]));f=json.load(open(sys.argv[2]));k=sys.argv[3];v=s[k];print(','.join(f[v]) if k.endswith('_font') else v)" "$STYLE" "$ROOT/fonts.json" $1; }
 MUSIC="$(cd "$ROOT" && python3 -c "import flywheel,os;print(os.path.expanduser(flywheel.CFG['music_dir']))")/$song"
 read src cx cw dur fps <<<$(python3 -c "
-import sqlite3,json,os;c=sqlite3.connect(os.path.expanduser('~/Movies/AI Editors/flywheel.db'))
+import sqlite3,json,os;W=os.environ.get('AI_EDITORS_WORK') or os.path.expanduser('~/Movies/AI Editors');c=sqlite3.connect(os.path.join(W,'flywheel.db'))
 p,cr,d,f=c.execute('select r.path,p.crop,p.duration,p.fps from raw_clips r join preps p on p.raw_id=r.id where r.id=$id').fetchone()
-import glob;lc=glob.glob(os.path.expanduser('~/Movies/AI Editors/cache/$id.*'));p=lc[0] if lc and not lc[0].endswith('.part') else p
+import glob;lc=glob.glob(os.path.join(W,'cache','$id.*'));p=lc[0] if lc and not lc[0].endswith('.part') else p
 cr=json.loads(cr) if cr!='null' else None
 print(p.replace(' ','\x01'),cr['x'] if cr else -1,cr['w'] if cr else -1,d,f)")
 src=${src//$'\x01'/ }

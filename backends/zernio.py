@@ -77,7 +77,11 @@ def _tiktok_privacy(account):
 
 def publish(video_path, caption, targets, meta):
     """meta: {'title': hook, 'idempotency': 'edit-12'}. Returns {platform: {'id','url','status','error'}}."""
-    url = upload(video_path)
+    return publish_url(upload(video_path), caption, targets, meta)
+
+
+def publish_url(url, caption, targets, meta):
+    """Post a clip already uploaded to Zernio's storage (the hub posts this way for its workers)."""
     platforms = []
     for t in targets:
         entry = {'platform': t['platform'], 'accountId': t['account']}

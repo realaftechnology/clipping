@@ -1,0 +1,15 @@
+# Front door for the hub. Deploy: cd gate && npx wrangler deploy   (secret: npx wrangler secret put GATE_SECRET)
+# Turn on Cloudflare Access for this Worker's workers.dev address in the Cloudflare dashboard
+# (Workers & Pages > realaf-hub > Settings > Domains & Routes > workers.dev > Enable Cloudflare Access).
+name = "realaf-hub"
+main = "worker.js"
+compatibility_date = "2026-10-01"
+workers_dev = true
+preview_urls = false
+
+[vars]
+HUB_HOST = "hub.railway.internal"
+
+[[vpc_services]]
+binding = "HUB"
+service_id = "REPLACE_WITH_VPC_SERVICE_ID"
