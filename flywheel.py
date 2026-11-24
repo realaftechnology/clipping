@@ -16,6 +16,7 @@ Architecture: Projects/Real AF/Context/Thoughts/2026-11-23 Short-Form Content Fl
 Output recipe: Context/AI Editors - Output Spec.md. Editors: editors/<editor>/editor.json + style.json.
   flywheel.py learn-performance [--force]   rewrite the performance playbook now (runs daily on its own)
   flywheel.py refs [title]      study new clips in the High Performers folder, then refresh the playbook and content profile
+Raw supply: Natalie's clips, plus 1-3 min moments the sourcing agent (sourcing.py) pulls from full episodes.
 """
 import csv, shutil, datetime as dt, fcntl, glob, importlib, json, os, re, sqlite3, statistics, subprocess, sys, tempfile, time, traceback
 
@@ -255,6 +256,40 @@ DECISION_SCHEMA = {
                                     'properties': {'index': {'type': 'integer'}, 'text': {'type': 'string'}}}}}}
 
 
+def _words(t):
+    return re.sub(r'[^a-z0-9 ]', ' ', (t or '').lower()).split()
+
+
+def same_moment(a, b, n=8):
+    """True when two transcripts share long runs of words: the same moment cut twice (e.g. by Natalie and by the
+    sourcing agent), whichever one is longer."""
+    wa, wb = _words(a), _words(b)
+    ga = {tuple(wa[i:i + n]) for i in range(len(wa) - n + 1)}
+    gb = {tuple(wb[i:i + n]) for i in range(len(wb) - n + 1)}
+    return bool(ga and gb) and len(ga & gb) >= 0.3 * min(len(ga), len(gb))
+
+
+def duplicate_of(c, row, prep_row, eid):
+    """Another raw clip from the same episode that this editor already used for the same moment."""
+    for o in c.execute("SELECT r.id, p.transcript FROM raw_clips r JOIN preps p ON p.raw_id=r.id WHERE r.episode=? AND r.id!=? "
+                       "AND EXISTS (SELECT 1 FROM edits e WHERE e.raw_id=r.id AND e.editor=? AND e.status NOT IN ('excluded','skipped','rejected'))",
+                       (row['episode'], row['id'], eid)):
+        if same_moment(prep_row['transcript'], o['transcript']):
+            return o['id']
+
+
+def sourced_note(row):
+    try:  # moments the sourcing agent handed off sit in the show folders next to Natalie's clips; its table knows them
+        if not db().execute("SELECT 1 FROM sourced WHERE path=? AND status='approved'", (row['path'],)).fetchone():
+            return ''
+    except sqlite3.OperationalError:
+        return ''
+    return ("This raw clip is a long 16:9 MOMENT (about 1-3 minutes) the sourcing agent pulled from the full episode, not a "
+            "short-form cut. Your trim makes the short: set start and end so the post is the strongest self-contained "
+            "stretch of about 20-60 s (winners run 19-48 s), opening on a sentence that raises a question and ending on the "
+            "payoff, then tighten it as usual. Judge opening_raises_question on the sentence you start on.\n")
+
+
 def decide_prompt(row, prep_row, ed, pool):
     spec = open(SPEC).read()
     rules = spec[spec.index('## Hook rules'):spec.index('## Choices the editor makes per clip')]
@@ -281,7 +316,7 @@ Review decisions so far (Matt and Natalie):
 {review_lessons(ed['id'])}
 
 Raw clip: {os.path.basename(row['path'])} (folder {row['folder']}, {prep_row['duration']:.0f} s, added {(time.time() - row['mtime']) / 86400:.0f} days ago)
-{'' if is_fresh(row['mtime']) else "This is an ARCHIVE clip, used only because there's nothing fresh to post. It must be evergreen: always true, not tied to any news, event, season, date or period. If it depends on any time period at all, set topical=true."}
+{sourced_note(row)}{'' if is_fresh(row['mtime']) else "This is an ARCHIVE clip, used only because there's nothing fresh to post. It must be evergreen: always true, not tied to any news, event, season, date or period. If it depends on any time period at all, set topical=true."}
 Transcript (auto, may lack punctuation):
 {q3}{prep_row['transcript']}{q3}
 
@@ -314,12 +349,12 @@ Also:
   start 0 (or the first sentence start), end = last sentence end, remove []."""
 
 
-def ask_claude(prompt, schema=None):
+def ask_claude(prompt, schema=None, timeout=300):
     cmd = ['claude', '-p', prompt, '--output-format', 'json', '--tools', '', '--no-session-persistence',
            '--setting-sources', '', '--json-schema', json.dumps(schema or DECISION_SCHEMA)]
     if CFG.get('decide_model'):
         cmd += ['--model', CFG['decide_model']]
-    r = subprocess.run(cmd, capture_output=True, text=True, cwd=WORK, timeout=300)
+    r = subprocess.run(cmd, capture_output=True, text=True, cwd=WORK, timeout=timeout)
     out = json.loads(r.stdout or '{}')
     if out.get('is_error') or 'structured_output' not in out:
         raise RuntimeError(f"claude -p failed: {out.get('result') or r.stderr[:300]}")
@@ -336,6 +371,13 @@ def decide(raw_id, eid, manual=None):
     recent = [r[0] for r in c.execute('SELECT song FROM edits WHERE editor=? AND raw_id!=? AND song IS NOT NULL ORDER BY id DESC LIMIT 5', (eid, raw_id))]
     pool = [r for r in songs() if r['file'] not in recent]
     hit = EXCLUDE_WORDS.search(prep_row['transcript'] or '')
+    dup = None if manual else duplicate_of(c, row, prep_row, eid)
+    if dup:
+        cur = c.execute('INSERT INTO edits(raw_id,editor,version,status,decision,note,created,updated) VALUES(?,?,?,?,?,?,?,?)',
+                        (raw_id, eid, (c.execute('SELECT MAX(version) FROM edits WHERE raw_id=? AND editor=?', (raw_id, eid)).fetchone()[0] or 0) + 1, 'skipped', '{}', f'same moment as raw clip {dup}, already edited', time.time(), time.time()))
+        c.commit()
+        log(f'{eid} decide raw {raw_id} -> skipped: same moment as raw clip {dup}')
+        return cur.lastrowid
     if hit and not manual:
         d = {'excluded': True, 'exclusion_reason': f'keyword: {hit[0]}', 'usable': False, 'skip_reason': '', 'topical': False,
              'opening_raises_question': False, 'hook': '', 'alt_hooks': [], 'mood': 'reflective', 'song': '', 'post_caption': '',
@@ -1328,6 +1370,11 @@ def run():
     beat = os.path.join(WORK, 'last_run.json')
     started = time.time()
     json.dump({'started': started, 'finished': None}, open(beat, 'w'))
+    try:  # the sourcing agent first: a new full episode becomes raw moments (held for approval unless auto_approve)
+        import sourcing
+        sourcing.run()
+    except Exception as ex:
+        log(f'sourcing ERROR {ex}\n{traceback.format_exc()}')
     scan()
     c = db()
     for ed in editors():

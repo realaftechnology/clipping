@@ -19,5 +19,16 @@
   ],
   "fresh_days": 7,
   "evergreen_reserve": 3,
-  "references_root": "~/Library/CloudStorage/GoogleDrive-<account>/My Drive/REAL AF/Real AF UGC/High Performers"
+  "references_root": "~/Library/CloudStorage/GoogleDrive-<account>/My Drive/REAL AF/Real AF UGC/High Performers",
+  "sourcing": {
+    "_note": "Sourcing agent (sourcing.py): pulls 1-3 minute 16:9 moments from each full episode into review_folder. Approving one moves it into its show's folder (QAF, CTI...) with the usual <Episode>_<Show>_<Subject>.mp4 name, where the editors pick it up; auto_approve skips review. episodes_folder_id goes in config.local.json.",
+    "enabled": true,
+    "review_folder": "AI Sourced - Review",
+    "auto_approve": false,
+    "max_clips": 40,
+    "min_seconds": 60,
+    "max_seconds": 180,
+    "since_episode": 1076,
+    "model": null
+  }
 }

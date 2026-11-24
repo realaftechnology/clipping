@@ -133,6 +133,11 @@ body { margin: 0; background: radial-gradient(ellipse at 54% 50%, var(--bg-2), v
 .lift { font-size: 11px; color: var(--live); margin-left: 6px; } .lift.low { color: var(--muted); }
 .sched:hover .h { color: var(--text); text-decoration: underline; }
 .done { font-size: 12px; color: var(--text-2); margin-top: 8px; }
+.rv.w { grid-template-columns: 150px 1fr; } .rv.w .thumb, .rv.w video { width: 150px; aspect-ratio: 16/9; }
+.rv .meta { font-size: 11px; color: var(--muted); margin-top: 3px; }
+.rv .ok-why { font-size: 12px; color: var(--text-2); margin-top: 4px; }
+.pbox.wide { width: min(880px, 100%); } .pbox.wide video { aspect-ratio: 16/9; max-height: calc(100vh - 260px); }
+.elist div.p { display: flex; justify-content: space-between; gap: 10px; padding: 9px 0; border-bottom: 1px solid var(--line); }
 @media (max-width: 720px) {
   .stats { gap: 14px; } .stat b { font-size: 16px; } .brand .t { display: none; }
   .sheet { left: 8px; right: 8px; width: auto; top: auto; height: 70vh; bottom: 8px; transform: translateY(110%); }
@@ -170,9 +175,13 @@ let D = null, open = new Set(), first = true, edges = [], particles = [], sheetF
 async function load() {
   try { const res = await fetch('/api/overview'); if (res.status === 401) { location.reload(); return; } D = await res.json(); } catch (e) { return; }
   if (D.error) { document.getElementById('ticker').textContent = D.error; return; }
+  // the sourcing agent's moments go through the same review as the editors' clips (kind 'sourced', 16:9)
+  D.review = D.review.concat(((D.sourcing || {}).queue || []).map(r => ({edit_id: r.id, kind: 'sourced', brand_set: SOURCING,
+    hook: r.name.replace(/\.mp4$/, ''), note: r.flags.join('; '), line: r.first_line, why: r.why,
+    meta: `${r.episode} · ${mins(r.duration)} · ${r.confidence}/10`, has_video: r.has_video})));
   if (first && D.brand_sets.length) { open.add(D.brand_sets[0].id); first = false; }
   top_(); ticker();
-  const s = JSON.stringify([D.brand_sets, D.posts.map(p => p.platforms.map(x => x.views))]);
+  const s = JSON.stringify([D.brand_sets, D.posts.map(p => p.platforms.map(x => x.views)), D.sourcing && [D.sourcing.held, D.sourcing.supplied, D.sourcing.working, D.sourcing.failed]]);
   if (s !== sig) { sig = s; draw(); }  // redraw only when something changed, so the web keeps flowing
   if (sheetFor && !document.querySelector('.whyf')) sheetFor();  // don't wipe a half-written reason
 }
@@ -264,13 +273,19 @@ function draw() {
       </g>`;
     });
   }
-  // the chief of staff at the centre of the web
-  g += `<g class="node" tabindex="0" role="button" aria-label="Chief of staff" onclick="showCos()" onkeydown="if(event.key==='Enter')showCos()" style="color:var(--text)">
-    <circle cx="${CX}" cy="${CY}" r="96" fill="url(#halo)" class="breathe"/>
-    <circle cx="${CX}" cy="${CY}" r="68" fill="none" stroke="var(--node-ring)" stroke-width="1.5" stroke-dasharray="2 7" class="spin"/>
-    <circle cx="${CX}" cy="${CY}" r="55" fill="var(--node)" stroke="var(--node-ring)" stroke-width="2" class="ring"/>
-    <text class="lbl" x="${CX}" y="${CY - 4}" font-size="14">Chief of</text><text class="lbl" x="${CX}" y="${CY + 13}" font-size="14">Staff</text>
-    <text class="sub" x="${CX}" y="${CY + 31}" font-size="9" letter-spacing=".1em">SOON</text></g>`;
+  // the sourcing agent at the centre: full episodes in, raw moments out along every branch to the editors
+  // (Matt, 2026-11-23: "replace the chief of staff with the sourcing agent. Because right now, I'm the chief of staff")
+  const SO = D.sourcing || {held: 0, supplied: 0, episodes_done: 0}, sBad = !!SO.failed, cS = sBad ? 'var(--bad)' : 'var(--text)';
+  const tipS = `<b>Sourcing agent</b><br>${SO.working ? `Working on ${esc(SO.working)}<br>` : ''}${sBad ? `<span style=&quot;color:var(--bad)&quot;>${esc(SO.failed).slice(0, 110)}</span><br>` : ''}${SO.episodes_done} episodes · ${SO.supplied} moments supplied<br>${SO.held} in review`;
+  g += `<g class="node" tabindex="0" role="button" aria-label="Sourcing agent" onclick="showSourcing()" onkeydown="if(event.key==='Enter')showSourcing()"
+      onmousemove="tipShow(event,'${tipS}')" onmouseleave="tipHide()" style="color:${cS}">
+    <circle cx="${CX}" cy="${CY}" r="96" fill="url(#halo)" class="breathe ${sBad ? 'alarm' : ''}"/>
+    <circle cx="${CX}" cy="${CY}" r="68" fill="none" stroke="${sBad ? 'var(--bad)' : 'var(--node-ring)'}" stroke-width="1.5" stroke-dasharray="2 7" class="${SO.working ? 'spin' : ''}"/>
+    <circle cx="${CX}" cy="${CY}" r="55" fill="var(--node)" stroke="${sBad ? 'var(--bad)' : 'var(--node-ring)'}" stroke-width="2" class="ring ${sBad ? 'alarm-ring' : ''}"/>
+    <text class="lbl" x="${CX}" y="${CY - 2}" font-size="15">Sourcing</text>
+    <text class="sub" x="${CX}" y="${CY + 16}" font-size="9" letter-spacing=".1em">${SO.working ? 'WORKING' : `${SO.supplied} SUPPLIED`}</text>
+    ${SO.held ? `<g onclick="event.stopPropagation();showSourcing('review')"><circle cx="${CX + 42}" cy="${CY - 42}" r="14" fill="var(--flag)"/><text x="${CX + 42}" y="${CY - 38}" text-anchor="middle" font-size="12" font-weight="700" fill="#111">${SO.held}</text></g>` : ''}
+  </g>`;
   g += '</g></svg>';
   const st = document.getElementById('stage');
   st.innerHTML = g;
@@ -314,27 +329,33 @@ function sheet(html, again) { document.getElementById('sheetBody').innerHTML = h
 function closeSheet() { document.getElementById('sheet').classList.remove('open'); sheetFor = null; }
 addEventListener('keydown', e => { if (e.key === 'Escape') { if (document.getElementById('player').classList.contains('open')) closePlayer(); else closeSheet(); } });
 
-// big player for one review clip, with the decision right under it
-function openPlayer(id) {
-  const r = D.review.find(x => x.edit_id === id); if (!r) return;
-  const left = D.review.filter(x => x.brand_set === r.brand_set && !x.pending).length;
-  document.getElementById('pbox').innerHTML = `<button class="x" onclick="closePlayer()" aria-label="Close">×</button>
-    <div class="sub" style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em">${left} left to review</div>
+// big player for one review clip, with the decision right under it (editors' clips and the sourcing agent's moments)
+const SOURCING = '__sourcing', mins = s => s >= 60 ? `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, '0')}` : `${Math.round(s)} s`;
+const kindOf = r => r.kind || 'edit', vid = (id, kind) => `/${kind === 'sourced' ? 'sourced' : 'video'}/${id}`;
+const findRv = (id, kind = 'edit') => D.review.find(x => x.edit_id === id && kindOf(x) === kind);
+function openPlayer(id, kind = 'edit') {
+  const r = findRv(id, kind); if (!r) return;
+  const left = D.review.filter(x => x.brand_set === r.brand_set && !x.pending).length, box = document.getElementById('pbox');
+  box.classList.toggle('wide', kind === 'sourced');
+  box.innerHTML = `<button class="x" onclick="closePlayer()" aria-label="Close">×</button>
+    <div class="sub" style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em">${left} left to review${r.meta ? ' · ' + esc(r.meta) : ''}</div>
     <div class="hk">${esc(r.hook)}</div>
-    <video src="/video/${id}" controls autoplay playsinline></video>
+    <video src="${vid(id, kind)}" controls autoplay playsinline></video>
+    ${r.why ? `<div style="font-size:12px;color:var(--text-2)">${esc(r.why)}</div>` : ''}
     ${r.note ? `<div class="why">${esc(r.note)}</div>` : ''}
     ${r.pending ? `<div class="done">${r.pending === 'approve' ? 'Approved' : 'Rejected'} · syncing</div>`
-      : `<div class="btns"><button class="ok" onclick="decide(${id},'approve',this)">Approve</button><button onclick="askWhy(${id},this,true)">Reject</button></div>`}`;
+      : `<div class="btns"><button class="ok" onclick="decide(${id},'approve',this,'${kind}')">Approve</button><button onclick="askWhy(${id},this,true,'${kind}')">Reject</button></div>`}`;
   document.getElementById('player').classList.add('open');
 }
-// after a decision in the player, go straight to the next clip in the same brand set's queue
-function nextClip(doneId) {
-  const cur = D.review.find(r => r.edit_id === doneId), queue = D.review.filter(r => !cur || r.brand_set === cur.brand_set);
-  const i = queue.findIndex(r => r.edit_id === doneId), rest = queue.filter(r => r.edit_id !== doneId && !r.pending);
-  const next = rest.find((r, k) => queue.indexOf(r) > i) || rest[0];
-  D.review = D.review.filter(r => r.edit_id !== doneId);
+// after a decision in the player, go straight to the next clip in the same queue
+function nextClip(doneId, kind = 'edit') {
+  const same = r => r.edit_id === doneId && kindOf(r) === kind;
+  const cur = D.review.find(same), queue = D.review.filter(r => !cur || r.brand_set === cur.brand_set);
+  const i = queue.findIndex(same), rest = queue.filter(r => !same(r) && !r.pending);
+  const next = rest.find(r => queue.indexOf(r) > i) || rest[0];
+  D.review = D.review.filter(r => !same(r));
   if (sheetFor && !document.querySelector('.whyf')) sheetFor();
-  next ? openPlayer(next.edit_id) : closePlayer();
+  next ? openPlayer(next.edit_id, kindOf(next)) : closePlayer();
   load();
 }
 // watch a scheduled clip (no decision buttons)
@@ -360,13 +381,13 @@ function openClip(id) {
     ${x.has_video ? `<video src="/video/${id}" controls autoplay playsinline></video>` : '<div class="why">Video file not found</div>'}`;
   document.getElementById('player').classList.add('open');
 }
-function closePlayer() { const p = document.getElementById('player'), v = p.querySelector('video'); v && v.pause(); p.classList.remove('open'); document.getElementById('pbox').innerHTML = ''; }
-async function decide(id, action, btn) {
+function closePlayer() { const p = document.getElementById('player'), v = p.querySelector('video'); v && v.pause(); p.classList.remove('open'); const b = document.getElementById('pbox'); b.innerHTML = ''; b.classList.remove('wide'); }
+async function decide(id, action, btn, kind = 'edit') {
   btn.parentElement.querySelectorAll('button').forEach(b => b.disabled = true);
-  const r = await send(id, action);
+  const r = await send(id, action, '', kind);
   if (r.error) { alert(r.error); btn.parentElement.querySelectorAll('button').forEach(b => b.disabled = false); return; }
-  btn.parentElement.outerHTML = `<div class="done" style="font-size:14px;text-align:center">${action === 'approve' ? 'Approved ✓' : 'Rejected'}</div>`;
-  setTimeout(() => nextClip(id), 700);
+  btn.parentElement.outerHTML = `<div class="done" style="font-size:14px;text-align:center">${action === 'approve' ? (kind === 'sourced' ? 'Approved ✓ · sent to the editors' : 'Approved ✓') : 'Rejected'}</div>`;
+  setTimeout(() => nextClip(id, kind), 700);
 }
 
 function showSet(id, tab = 'overview') {
@@ -404,41 +425,56 @@ function showSet(id, tab = 'overview') {
       return u ? `<a href="${esc(u)}" target="_blank" rel="noopener"><span class="h">${esc(p.hook)}</span><span class="v">${fmt(v)}${lf}</span></a>` : `<div class="p"><span class="h">${esc(p.hook)}</span><span class="v">${fmt(v)}</span></div>`; }).join('') || '<div class="p">Nothing yet</div>'}</div>`, () => showSet(id, 'overview'));
 }
 
-function showCos() {
-  sheet(`<h3>Chief of Staff</h3><div class="chips"><span class="chip">Coming soon</span></div>
-    <div style="color:var(--text-2)">One agent over every editor. Tell it what to change (“Editor 01, switch fonts”) and it makes the change, checks quality, and keeps brand sets distinct.</div>`, null);
+function showSourcing(tab = 'overview') {
+  const S = D.sourcing; if (!S) return;
+  const queue = D.review.filter(r => r.brand_set === SOURCING);
+  const head = `<h3><span style="width:10px;height:10px;border-radius:50%;background:var(--text-2);display:inline-block;flex:none"></span>Sourcing agent</h3>
+    <div class="tabs"><button class="${tab === 'overview' ? 'on' : ''}" onclick="showSourcing('overview')">Overview</button>
+      <button class="${tab === 'review' ? 'on' : ''}" onclick="showSourcing('review')">Review ${queue.length ? `<span class="n">${queue.length}</span>` : ''}</button></div>`;
+  if (tab === 'review') return sheet(head + reviewList(queue), () => showSourcing('review'));
+  const reviewed = S.supplied + S.rejected;
+  sheet(head + (S.failed ? `<div class="issue"><b>Last episode failed</b> · ${esc(S.failed)}</div>` : '') + `
+    <div class="chips"><span class="chip">${S.auto_approve ? 'Auto-approve on' : 'You approve each moment'}</span><span class="chip">1–3 min · 16:9</span>${S.working ? `<span class="chip">Working on ${esc(S.working)}</span>` : ''}</div>
+    <div style="color:var(--text-2);font-size:13px">Goes through every full episode and pulls out each self-contained moment of substance inside the guardrails. Approved moments go into the show's clip folder, where the editors pick them up.</div>
+    <div class="nums" style="margin-top:12px"><div><b>${S.episodes_done}</b><span>episodes</span></div><div><b>${S.supplied}</b><span>supplied</span></div><div><b>${S.held}</b><span>in review</span></div>
+      <div><b>${reviewed ? Math.round(100 * S.supplied / reviewed) + '%' : '–'}</b><span>approved</span></div><div><b>${S.rejected}</b><span>rejected</span></div><div><b>${S.edited}</b><span>edited</span></div></div>
+    <div class="sec">Episodes</div><div class="plist elist">${S.episodes.map(e => `<div class="p"><span class="h">${esc(e.title)}</span><span class="v">${e.status === 'done' ? `${e.picks} moments` : esc(e.status)}${e.finished ? ' · ' + ago(e.finished) : ''}</span></div>`).join('') || '<div class="p">None yet</div>'}</div>`,
+    () => showSourcing('overview'));
 }
 
 function reviewList(list) {
-  return `${list.map(r => `<div class="rv" id="rv${r.edit_id}">
-      ${r.has_video ? `<div class="thumb" role="button" tabindex="0" aria-label="Play ${esc(r.hook)}" onclick="openPlayer(${r.edit_id})" onkeydown="if(event.key==='Enter')openPlayer(${r.edit_id})"><video src="/video/${r.edit_id}#t=0.5" preload="metadata" playsinline muted></video></div>` : '<div></div>'}
-      <div><div class="hk">${esc(r.hook)}</div><div class="why" title="${esc(r.note)}">${esc(r.note || 'Needs a look')}</div>
-      ${r.pending ? `<div class="done">${r.pending === 'approve' ? 'Approved' : 'Rejected'} · syncing</div>` : `<div class="btns"><button class="ok" onclick="act(${r.edit_id},'approve',this)">Approve</button><button onclick="askWhy(${r.edit_id},this,false)">Reject</button></div>`}</div>
-    </div>`).join('') || '<div style="color:var(--text-2);margin-top:12px">All clear.</div>'}`;
+  return `${list.map(r => { const k = kindOf(r), w = k === 'sourced';
+    return `<div class="rv${w ? ' w' : ''}" id="rv${k}${r.edit_id}">
+      ${r.has_video ? `<div class="thumb" role="button" tabindex="0" aria-label="Play ${esc(r.hook)}" onclick="openPlayer(${r.edit_id},'${k}')" onkeydown="if(event.key==='Enter')openPlayer(${r.edit_id},'${k}')"><video src="${vid(r.edit_id, k)}#t=${w ? 1 : 0.5}" preload="metadata" playsinline muted></video></div>` : '<div></div>'}
+      <div><div class="hk">${esc(r.hook)}</div>${r.meta ? `<div class="meta">${esc(r.meta)}</div>` : ''}${r.line ? `<div class="ok-why">“${esc(r.line).slice(0, 110)}”</div>` : ''}
+      ${r.note || !w ? `<div class="why" title="${esc(r.note)}">${esc(r.note || 'Needs a look')}</div>` : ''}
+      ${r.pending ? `<div class="done">${r.pending === 'approve' ? 'Approved' : 'Rejected'} · syncing</div>` : `<div class="btns"><button class="ok" onclick="act(${r.edit_id},'approve',this,'${k}')">Approve</button><button onclick="askWhy(${r.edit_id},this,false,'${k}')">Reject</button></div>`}</div>
+    </div>`; }).join('') || '<div style="color:var(--text-2);margin-top:12px">All clear.</div>'}`;
 }
 
-async function act(id, action, btn) {
+async function act(id, action, btn, kind = 'edit') {
   btn.parentElement.querySelectorAll('button').forEach(b => b.disabled = true);
-  const r = await send(id, action);
+  const r = await send(id, action, '', kind);
   if (r.error) { alert(r.error); btn.parentElement.querySelectorAll('button').forEach(b => b.disabled = false); return; }
-  btn.parentElement.outerHTML = `<div class="done">${action === 'approve' ? 'Approved' : 'Rejected'}</div>`;
+  btn.parentElement.outerHTML = `<div class="done">${action === 'approve' ? (kind === 'sourced' ? 'Approved · sent to the editors' : 'Approved') : 'Rejected'}</div>`;
   setTimeout(load, 1200);
 }
 
-function send(id, action, reason = '') {
-  return fetch(`/api/edit/${id}/${action}`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({reason})})
+function send(id, action, reason = '', kind = 'edit') {
+  return fetch(`/api/${kind}/${id}/${action}`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({reason})})
     .then(r => r.json()).catch(e => ({error: String(e)}));
 }
 
 // Rejecting asks why. The reason is saved and every editor reads past reasons before picking its next clip and hook.
+const WHY_SRC = ['No real substance', "Doesn't stand alone", 'Starts or ends badly', 'Too long, should be split', 'Off-limits subject', 'Too political'];
 const WHY = ['Wrong subject for this account', 'Hook gives away the answer', "Hook doesn't match the clip", 'Clip is weak or slow', 'Cut starts or ends badly', 'Music is wrong', 'Too political'];
-function askWhy(id, btn, inPlayer) {
-  const box = btn.parentElement;
+function askWhy(id, btn, inPlayer, kind = 'edit') {
+  const box = btn.parentElement, src = kind === 'sourced';
   box.outerHTML = `<div class="whyf" data-id="${id}">
     <div class="q">Why reject it?</div>
-    <div class="wchips">${WHY.map(w => `<button type="button" onclick="pickWhy(this)">${w}</button>`).join('')}</div>
-    <textarea rows="3" placeholder="Say it in your own words. The editors learn from this."></textarea>
-    <div class="btns"><button class="no" onclick="sendWhy(${id},this,${inPlayer})">Reject</button><button onclick="${inPlayer ? `openPlayer(${id})` : 'sheetFor && sheetFor()'}">Cancel</button></div>
+    <div class="wchips">${(src ? WHY_SRC : WHY).map(w => `<button type="button" onclick="pickWhy(this)">${w}</button>`).join('')}</div>
+    <textarea rows="3" placeholder="Say it in your own words. ${src ? 'The sourcing agent' : 'The editors'} learn${src ? 's' : ''} from this."></textarea>
+    <div class="btns"><button class="no" onclick="sendWhy(${id},this,${inPlayer},'${kind}')">Reject</button><button onclick="${inPlayer ? `openPlayer(${id},'${kind}')` : 'sheetFor && sheetFor()'}">Cancel</button></div>
   </div>`;
   const ta = document.querySelector(`.whyf[data-id="${id}"] textarea`); ta && ta.focus();
 }
@@ -448,14 +484,14 @@ function pickWhy(chip) {
   ta.value = chip.classList.contains('on') ? (ta.value ? ta.value.replace(/\.?\s*$/, '. ') : '') + t : ta.value.replace(t, '').replace(/^\.\s*|\.\s*\.\s*/g, '').trim();
   ta.focus();
 }
-async function sendWhy(id, btn, inPlayer) {
+async function sendWhy(id, btn, inPlayer, kind = 'edit') {
   const f = btn.closest('.whyf'), reason = f.querySelector('textarea').value.trim();
   if (!reason) { f.querySelector('textarea').placeholder = 'A few words on why, so the editors can learn'; f.querySelector('textarea').focus(); return; }
   f.querySelectorAll('button,textarea').forEach(b => b.disabled = true);
-  const r = await send(id, 'reject', reason);
+  const r = await send(id, 'reject', reason, kind);
   if (r.error) { alert(r.error); f.querySelectorAll('button,textarea').forEach(b => b.disabled = false); return; }
   f.outerHTML = `<div class="done"${inPlayer ? ' style="font-size:14px;text-align:center"' : ''}>Rejected · reason saved</div>`;
-  setTimeout(() => { if (inPlayer) nextClip(id); else load(); }, inPlayer ? 900 : 1200);
+  setTimeout(() => { if (inPlayer) nextClip(id, kind); else load(); }, inPlayer ? 900 : 1200);
 }
 
 let tk = 0, tkTimer = null, tkLines = [];

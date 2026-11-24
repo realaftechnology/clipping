@@ -10,6 +10,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
 import flywheel as fw  # noqa: E402  (reuses its config, database and editor loading)
+import sourcing as src  # noqa: E402  (the sourcing agent: full episodes -> raw moments)
 
 PORT = int(os.environ.get('DASHBOARD_PORT', 8790))
 PLATFORMS = ['tiktok', 'instagram', 'youtube', 'facebook', 'x']
@@ -86,6 +87,25 @@ def learning(c, eid, days=14):
     return {'days': days, 'made': made, 'held': held, 'approved': ok, 'rejected': no, 'rules': rules}
 
 
+def sourcing(c):
+    """The sourcing agent: episodes it has gone through, moments it pulled, and the ones waiting for a human."""
+    src.db()  # creates its tables on first use
+    eps = [dict(r) for r in c.execute("SELECT id, title, episode, show, status, picks, note, started, finished FROM episodes ORDER BY started DESC LIMIT 8")]
+    n = {r['status']: r['n'] for r in c.execute('SELECT status, COUNT(*) n FROM sourced GROUP BY status')}
+    held = [{'id': r['id'], 'name': r['name'], 'duration': r['duration'], 'first_line': r['first_line'], 'why': r['why'],
+             'flags': json.loads(r['risk_flags'] or '[]'), 'confidence': r['confidence'], 'episode': r['title'],
+             'has_video': bool(r['path'] and os.path.exists(r['path']))}
+            for r in c.execute("SELECT s.*, e.title FROM sourced s JOIN episodes e ON e.id=s.episode_id WHERE s.status='held' "
+                               "ORDER BY s.episode_id DESC, s.confidence DESC, s.id")]
+    used = c.execute("SELECT COUNT(DISTINCT e.raw_id) FROM edits e JOIN raw_clips r ON r.id=e.raw_id JOIN sourced s ON s.path=r.path").fetchone()[0]
+    return {'auto_approve': src.S['auto_approve'], 'enabled': src.S['enabled'] and bool(fw.CFG.get('episodes_folder_id')),
+            'episodes_done': c.execute("SELECT COUNT(*) FROM episodes WHERE status='done'").fetchone()[0],
+            'working': next((e['title'] for e in eps if e['status'] == 'processing' and time.time() - (e['started'] or 0) < 3 * 3600), None),
+            'failed': next((f"{e['title']}: {e['note']}" for e in eps if e['status'] == 'failed'), None),
+            'supplied': n.get('approved', 0), 'held': n.get('held', 0), 'rejected': n.get('rejected', 0), 'edited': used,
+            'episodes': eps, 'queue': held}
+
+
 def overview():
     c = fw.db()
     now = time.time()
@@ -159,7 +179,7 @@ def overview():
     for p in posts.values():
         p['lift'] = lift.get(p['edit_id'])
     nref = c.execute('SELECT COUNT(*), SUM(views) FROM refs WHERE analyzed_at IS NOT NULL').fetchone()
-    return {'refs': {'count': nref[0], 'views': nref[1] or 0}, 'generated': now, 'last_run': beat, 'health_at': HEALTH['at'], 'health_error': HEALTH['error'], 'stats_at': stats_at, 'brand_sets': sets,
+    return {'sourcing': sourcing(c), 'refs': {'count': nref[0], 'views': nref[1] or 0}, 'generated': now, 'last_run': beat, 'health_at': HEALTH['at'], 'health_error': HEALTH['error'], 'stats_at': stats_at, 'brand_sets': sets,
             'posts': list(posts.values())[:50], 'review': review, 'daily': daily, 'log': lines[::-1]}
 
 
@@ -184,13 +204,14 @@ class H(BaseHTTPRequestHandler):
                 return self.send(200, overview())
             except Exception as ex:
                 return self.send(500, {'error': str(ex)})
-        m = re.match(r'^/video/(\d+)$', self.path)
+        m = re.match(r'^/(video|sourced)/(\d+)$', self.path)
         if m:
-            return self.video(int(m.group(1)))
+            return self.video(int(m.group(2)), m.group(1))
         self.send(404, {'error': 'not found'})
 
-    def video(self, edit_id):
-        r = fw.db().execute('SELECT path FROM edits WHERE id=?', (edit_id,)).fetchone()
+    def video(self, edit_id, kind='video'):
+        r = (src.db().execute('SELECT path FROM sourced WHERE id=?', (edit_id,)) if kind == 'sourced'
+             else fw.db().execute('SELECT path FROM edits WHERE id=?', (edit_id,))).fetchone()
         if not r or not r['path'] or not os.path.exists(r['path']):
             return self.send(404, {'error': 'no video'})
         size = os.path.getsize(r['path'])
@@ -220,14 +241,22 @@ class H(BaseHTTPRequestHandler):
                 pass
 
     def do_POST(self):
-        m = re.match(r'^/api/edit/(\d+)/(approve|reject)$', self.path)
+        m = re.match(r'^/api/(edit|sourced)/(\d+)/(approve|reject)$', self.path)
         if not m:
             return self.send(404, {'error': 'not found'})
-        eid, action = int(m.group(1)), m.group(2)
+        kind, eid, action = m.group(1), int(m.group(2)), m.group(3)
         n = int(self.headers.get('Content-Length') or 0)
         reason = (json.loads(self.rfile.read(n) or b'{}').get('reason') or '').strip()[:1000] if n else ''
         if action == 'reject' and not reason:
             return self.send(400, {'error': 'Say why it was rejected'})
+        if kind == 'sourced':  # a raw moment from the sourcing agent: approve releases it to the editors
+            row = src.db().execute('SELECT status FROM sourced WHERE id=?', (eid,)).fetchone()
+            if not row or row['status'] != 'held':
+                return self.send(409, {'error': f'clip {eid} is not waiting for approval'})
+            out = subprocess.run([sys.executable, os.path.join(ROOT, 'sourcing.py'), action, str(eid), reason], capture_output=True, text=True)
+            if out.returncode:
+                return self.send(500, {'error': out.stderr[-400:]})
+            return self.send(200, {'ok': True, 'id': eid, 'status': 'approved' if action == 'approve' else 'rejected'})
         row = fw.db().execute('SELECT status FROM edits WHERE id=?', (eid,)).fetchone()
         if not row or row['status'] not in ('ready', 'qa_failed'):
             return self.send(409, {'error': f'edit {eid} is not waiting for review'})

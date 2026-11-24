@@ -1,12 +1,13 @@
 # Real AF AI editors (clipping)
 
-AI video editors that turn the raw podcast clips Natalie selects into finished short-form posts, publish them, and track the results. One AI editor runs one **brand set**: one branded account on every platform (TikTok, Instagram, later YouTube, Facebook and X). Editor 01 = Share the Standard.
+AI video editors (the "clipper agents") that turn raw podcast clips (Natalie's, plus moments the sourcing agent pulls from full episodes) into finished short-form posts, publish them, and track the results. One AI editor runs one **brand set**: one branded account on every platform (TikTok, Instagram, later YouTube, Facebook and X). Editor 01 = Share the Standard.
 
 ## Pieces
 
 | Path | What it does |
 |---|---|
 | `flywheel.py` | The pipeline: `scan` → `prep` (crop + transcript) → `decide` (hook, song, caption, safety checks via headless Claude) → `render` + QA → review gate → `queue` → `post` → `track`/`stats`. `python3 flywheel.py run` does one unattended pass. |
+| `sourcing.py` | The sourcing agent: takes each full episode from the exports folder, transcribes it, picks every substantive 1–3 min moment (headless Claude), cuts each at whole-sentence boundaries in the silences as a raw 16:9 clip, and holds it for approval (or, with `auto_approve`, hands it straight to the editors). `flywheel.py run` calls it once per pass. |
 | `lib/render_clip.sh`, `lib/captions.py`, `lib/render.mjs` | Renders one clip: 1080x1920 crop, captions, hook box, music bed (ffmpeg + headless Chrome). |
 | `bin/faces.swift` | Face detection for the crop (build: `swiftc -O bin/faces.swift -o bin/faces`). |
 | `backends/zernio.py` | Posting and analytics through Zernio. `backends/dryrun.py` for tests. |
@@ -16,7 +17,7 @@ AI video editors that turn the raw podcast clips Natalie selects into finished s
 
 ## Setup on the editing Mac
 
-1. `config.local.json` (not committed) with this machine's Google Drive paths: `source_root`, `music_dir`.
+1. `config.local.json` (not committed) with this machine's Google Drive paths: `source_root`, `music_dir`, and `episodes_folder_id` (the Drive folder of full episodes, for the sourcing agent).
 2. `music/catalog.csv` (not committed): the song list.
 3. `~/.config/ai-editors/secrets.json` (never committed): `zernio_api_key`, and for the hosted dashboard `dashboard_url` and `dashboard_ingest_token`.
 4. Tools: ffmpeg, whisper-cli, node + Chrome, the `claude` CLI signed in.
