@@ -21,8 +21,14 @@ python3 "$HERE/captions.py" "$WORK/prep/$id/words.json" "$job/overlay.html" --fo
 python3 - "$job/overlay.html" "$hook" "$(sty hook_font)" $(sty hook_size) $(sty hook_top) "$(sty hook_bg)" "$(sty hook_color)" <<'PY'
 import sys,html;p,h,font,size,top,bg,fg=sys.argv[1:];s=open(p).read()
 src=','.join(f'local("{n}")' for n in font.split(','))
-css=f'@font-face{{font-family:Hook;src:{src}}}#hk{{position:absolute;left:110px;right:110px;top:{top}px;text-align:center}}#hk span{{display:inline;background:{bg};color:{fg};font-family:Hook,sans-serif;font-size:{size}px;line-height:1.42;padding:8px 22px 6px;-webkit-box-decoration-break:clone;box-decoration-break:clone;border-radius:12px}}'
-s=s.replace('</style>',css+'</style>').replace('<div id="c">',f'<div id="hk"><span>{html.escape(h)}</span></div><div id="c">')
+# Two stacked layers: the black boxes (text invisible) underneath, the white text on top. Line boxes overlap so a
+# two-line hook reads as one joined box like Instagram's text background, without a box covering the line above.
+css=(f'@font-face{{font-family:Hook;src:{src}}}.hk{{position:absolute;left:110px;right:110px;top:{top}px;text-align:center}}'
+     f'.hk span{{display:inline;font-family:Hook,sans-serif;font-size:{size}px;line-height:1.2;padding:10px 22px 9px;'
+     f'-webkit-box-decoration-break:clone;box-decoration-break:clone;border-radius:12px}}'
+     f'#hkb span{{background:{bg};color:transparent}}#hkt span{{color:{fg}}}')
+t=html.escape(h)
+s=s.replace('</style>',css+'</style>').replace('<div id="c">',f'<div class="hk" id="hkb"><span>{t}</span></div><div class="hk" id="hkt"><span>{t}</span></div><div id="c">')
 open(p,'w').write(s)
 PY
 frames=$(python3 -c "print(int($dur*$fps))")
