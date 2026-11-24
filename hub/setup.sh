@@ -26,6 +26,9 @@ case $1 in
 hub)
   GATE=$(python3 -c "import secrets; print(secrets.token_urlsafe(32))")
   print -rn -- "$GATE" | railway variables --service hub --set-from-stdin GATE_SECRET --skip-deploys >/dev/null
+  if ! railway variables --service hub --kv 2>/dev/null | grep -q '^AUDIT_KEY='; then  # set once: changing it breaks the audit chain
+    python3 -c "import secrets; print(secrets.token_urlsafe(32), end='')" | railway variables --service hub --set-from-stdin AUDIT_KEY --skip-deploys >/dev/null
+  fi
   python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['zernio_api_key'], end='')" "$S" \
     | railway variables --service hub --set-from-stdin ZERNIO_API_KEY --skip-deploys >/dev/null
   secret "Paste the Cloudflare tunnel token"
