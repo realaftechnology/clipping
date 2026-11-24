@@ -11,6 +11,8 @@ SECRETS = os.path.expanduser('~/.config/ai-editors/secrets.json')
 
 
 def _key():
+    if os.environ.get('ZERNIO_API_KEY'):  # hosted dashboard (Railway variable)
+        return os.environ['ZERNIO_API_KEY']
     try:
         return json.load(open(SECRETS))['zernio_api_key']
     except (OSError, KeyError, ValueError):

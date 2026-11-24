@@ -40,7 +40,7 @@ def overview():
             now_f = hist[-1][1] if hist else None
             then_f = next((f for d, f in reversed(hist) if d <= week_ago), hist[0][1] if hist else None)
             if aid or pf in bs.get('planned_platforms', []) or pf in ed.get('platforms', []):
-                accts.append({'platform': pf, 'connected': bool(aid), 'handle': ed.get('handles', {}).get(pf),
+                accts.append({'platform': pf, 'id': aid, 'connected': bool(aid), 'handle': ed.get('handles', {}).get(pf),
                               'followers': now_f, 'growth_7d': (now_f - then_f) if now_f is not None and then_f is not None else None})
         counts = {s: 0 for s in STATUSES}
         for r in c.execute('SELECT status, COUNT(*) n FROM edits WHERE editor=? GROUP BY status', (ed['id'],)):
@@ -64,7 +64,7 @@ def overview():
                        "JOIN edits e ON e.id=p.edit_id LEFT JOIN post_stats s ON s.post_id=p.id "
                        "WHERE p.status IN ('posted','publishing','failed','removed','remove_by_hand') "
                        "ORDER BY p.posted_at DESC LIMIT 200"):
-        g = posts.setdefault(r['edit_id'], {'edit_id': r['edit_id'], 'brand_set': r['editor'], 'hook': r['hook'],
+        g = posts.setdefault(r['edit_id'], {'edit_id': r['edit_id'], 'remote_id': r['remote_id'], 'brand_set': r['editor'], 'hook': r['hook'],
                                             'posted_at': r['posted_at'], 'platforms': []})
         g['platforms'].append({k: r[k] for k in ('platform', 'status', 'url', 'views', 'likes', 'comments', 'shares', 'saves', 'error')})
 
@@ -209,8 +209,18 @@ def sync_forever(every=60):
 
 
 if __name__ == '__main__':
-    print(f'AI editor dashboard on http://127.0.0.1:{PORT}')
     url, _ = _cloud()
+    if '--sync-only' in sys.argv:  # what the editing Mac runs: no local page, just keep the hosted dashboard fed
+        if not url:
+            sys.exit(f'no dashboard_url / dashboard_ingest_token in {SECRETS}')
+        print(f'syncing the editing pipeline to {url} every minute')
+        while True:
+            try:
+                sync_once()
+            except Exception as ex:
+                print(f'{time.strftime("%H:%M:%S")} sync failed: {ex}', flush=True)
+            time.sleep(60)
+    print(f'AI editor dashboard on http://127.0.0.1:{PORT}')
     if url:
         print(f'syncing to {url} every minute')
         sync_forever()

@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
-"""Hosted copy of the AI editor dashboard (Railway), so Natalie and Matt can open it anywhere.
+"""Hosted AI editor dashboard (Railway). Works with the editing Mac switched off.
 
-It holds no pipeline: the Mac running flywheel.py pushes a snapshot of the dashboard data and the clips waiting for
-review every minute (dashboard/server.py --sync), and pulls back any Approve/Reject clicked here.
+- Analytics are its own: every 15 minutes it reads published posts, post stats and follower counts straight from
+  Zernio (ZERNIO_API_KEY) into DATA_DIR/cloud.db. Post stats refresh hourly in a post's first week, then every 6 h.
+- The editing pipeline (brand set settings, review queue, schedule, activity) comes from the Mac running
+  `dashboard/server.py --sync-only`, pushed every minute while it is on. The last copy stays on the page when it's off.
+- Approve/Reject clicked here is queued; the Mac applies it on its next sync.
 
-Env:
-  DASHBOARD_PASSWORD  password people type to open the page
-  INGEST_TOKEN        shared secret the Mac uses to push data and pull actions
-  DATA_DIR            persistent folder (Railway volume), default ./data
-  PORT                set by the host
-Standard library only.
+Env: DASHBOARD_PASSWORD, INGEST_TOKEN, ZERNIO_API_KEY, DATA_DIR (Railway volume), TZ (e.g. America/New_York), PORT.
+Standard library only. Run from the repo root: python3 dashboard/cloud.py
 """
-import hashlib, hmac, json, os, re, threading, time, urllib.parse
+import datetime as dt, hashlib, hmac, json, os, re, sqlite3, sys, threading, time, traceback, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.dirname(HERE))
 DATA = os.environ.get('DATA_DIR', os.path.join(HERE, 'data'))
 VIDEOS = os.path.join(DATA, 'videos')
 PASSWORD = os.environ.get('DASHBOARD_PASSWORD', '')
@@ -22,10 +22,24 @@ TOKEN = os.environ.get('INGEST_TOKEN', '')
 COOKIE = 'aied'
 LOCK = threading.Lock()
 os.makedirs(VIDEOS, exist_ok=True)
+if hasattr(time, 'tzset'):
+    time.tzset()
 
 
-def session_value():
-    return hmac.new(PASSWORD.encode(), b'ai-editor-dashboard-session', hashlib.sha256).hexdigest()
+# ---------- storage ----------
+def db():
+    c = sqlite3.connect(os.path.join(DATA, 'cloud.db'), timeout=30)
+    c.row_factory = sqlite3.Row
+    c.executescript('''
+    CREATE TABLE IF NOT EXISTS posts(remote_id TEXT, platform TEXT, account TEXT, username TEXT, url TEXT,
+      published_at REAL, content TEXT, PRIMARY KEY(remote_id, platform));
+    CREATE TABLE IF NOT EXISTS stats(remote_id TEXT, platform TEXT, taken_at REAL, views INTEGER, likes INTEGER,
+      comments INTEGER, shares INTEGER, saves INTEGER, PRIMARY KEY(remote_id, platform));
+    CREATE TABLE IF NOT EXISTS followers(account TEXT, platform TEXT, username TEXT, day TEXT, followers INTEGER,
+      taken_at REAL, PRIMARY KEY(account, day));
+    CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT);
+    ''')
+    return c
 
 
 def read_json(name, default):
@@ -39,6 +53,139 @@ def write_json(name, obj):
     tmp = os.path.join(DATA, name + '.tmp')
     json.dump(obj, open(tmp, 'w'))
     os.replace(tmp, os.path.join(DATA, name))
+
+
+def ts(iso):
+    return dt.datetime.fromisoformat(iso.replace('Z', '+00:00')).timestamp() if iso else None
+
+
+# ---------- analytics straight from Zernio ----------
+def refresh():
+    from backends import zernio as z
+    c = db()
+    now = time.time()
+    page = 1
+    while True:  # every published post, per platform
+        _, j = z._call('GET', '/posts', query={'status': 'published', 'limit': 100, 'page': page})
+        for p in j.get('posts', []):
+            for x in p.get('platforms', []):
+                if x.get('status') != 'published':
+                    continue
+                acc = x.get('accountId') or {}
+                c.execute('INSERT OR REPLACE INTO posts VALUES(?,?,?,?,?,?,?)', (
+                    p['_id'], x['platform'], acc.get('_id') if isinstance(acc, dict) else acc,
+                    acc.get('username') if isinstance(acc, dict) else None, x.get('platformPostUrl'),
+                    ts(x.get('publishedAt') or p.get('publishedAt')), p.get('content')))
+        pg = j.get('pagination') or {}
+        if page >= (pg.get('pages') or 1):
+            break
+        page += 1
+    c.commit()
+    due = {}
+    for r in c.execute('SELECT p.remote_id, p.published_at, MIN(COALESCE(s.taken_at,0)) seen FROM posts p LEFT JOIN stats s '
+                       'ON s.remote_id=p.remote_id AND s.platform=p.platform WHERE p.published_at>? GROUP BY p.remote_id',
+                       (now - 30 * 86400,)):
+        every = 3600 if now - r['published_at'] < 7 * 86400 else 6 * 3600
+        if now - r['seen'] >= every:
+            due[r['remote_id']] = True
+    for rid in due:
+        try:
+            got = z.post_stats(rid)
+        except Exception as ex:
+            print(f'stats {rid}: {ex}', flush=True)
+            continue
+        for pf, m in got.items():
+            c.execute('INSERT OR REPLACE INTO stats VALUES(?,?,?,?,?,?,?,?)', (rid, pf, now, m.get('views'), m.get('likes'),
+                      m.get('comments'), m.get('shares'), m.get('saves')))
+            if m.get('url'):
+                c.execute('UPDATE posts SET url=? WHERE remote_id=? AND platform=? AND url IS NULL', (m['url'], rid, pf))
+    day = dt.date.today().isoformat()
+    last = c.execute("SELECT v FROM meta WHERE k='followers_at'").fetchone()
+    if not last or now - float(last['v']) > 6 * 3600:
+        for a in z.account_info():
+            c.execute('INSERT OR REPLACE INTO followers VALUES(?,?,?,?,?,?)', (a['id'], a['platform'], a['username'], day, a['followers'], now))
+        c.execute("INSERT OR REPLACE INTO meta VALUES('followers_at', ?)", (str(now),))
+    c.execute("INSERT OR REPLACE INTO meta VALUES('refreshed_at', ?)", (str(now),))
+    c.commit()
+
+
+def refresher(every=900):
+    while True:
+        try:
+            if os.environ.get('ZERNIO_API_KEY'):
+                refresh()
+        except Exception as ex:
+            print(f'refresh failed: {ex}\n{traceback.format_exc()}', flush=True)
+        time.sleep(every)
+
+
+# ---------- the page's data: pipeline from the Mac + analytics from here ----------
+def overview():
+    snap = read_json('snapshot.json', None)
+    if not snap:
+        return None
+    c = db()
+    acc2set = {a['id']: b['id'] for b in snap['brand_sets'] for a in b['accounts'] if a.get('id')}
+    hooks = {p.get('remote_id'): p['hook'] for p in snap.get('posts', []) if p.get('remote_id')}
+    removed = {(p.get('remote_id'), x['platform']) for p in snap.get('posts', []) for x in p['platforms']
+               if x.get('status') in ('removed', 'remove_by_hand')}
+    rows = c.execute('SELECT p.*, s.views, s.likes, s.comments, s.shares, s.saves, s.taken_at FROM posts p LEFT JOIN stats s '
+                     'ON s.remote_id=p.remote_id AND s.platform=p.platform ORDER BY p.published_at DESC').fetchall()
+    week_ago = (dt.date.today() - dt.timedelta(days=7)).isoformat()
+    fol = {}
+    for r in c.execute('SELECT account, day, followers FROM followers ORDER BY day'):
+        fol.setdefault(r['account'], []).append((r['day'], r['followers']))
+
+    for b in snap['brand_sets']:
+        tot = {'posts': set(), 'views': 0, 'likes': 0, 'comments': 0, 'shares': 0, 'saves': 0}
+        for r in rows:
+            if acc2set.get(r['account']) == b['id'] and (r['remote_id'], r['platform']) not in removed:
+                tot['posts'].add(r['remote_id'])
+                for k in ('views', 'likes', 'comments', 'shares', 'saves'):
+                    tot[k] += r[k] or 0
+        tot['posts'] = len(tot['posts'])
+        b['totals'] = tot
+        for a in b['accounts']:
+            h = fol.get(a.get('id'), [])
+            if h:
+                then = next((f for d, f in reversed(h) if d <= week_ago), h[0][1])
+                a['followers'], a['growth_7d'] = h[-1][1], (h[-1][1] or 0) - (then or 0)
+
+    posts, daily = {}, {}
+    for r in rows:
+        bs = acc2set.get(r['account'], 'other')
+        g = posts.setdefault(r['remote_id'], {'remote_id': r['remote_id'], 'brand_set': bs, 'posted_at': r['published_at'],
+                                              'hook': hooks.get(r['remote_id']) or (r['content'] or '').split('\n')[0][:90], 'platforms': []})
+        is_removed = (r['remote_id'], r['platform']) in removed
+        g['platforms'].append({'platform': r['platform'], 'status': 'removed' if is_removed else 'posted', 'url': r['url'],
+                               **{k: r[k] for k in ('views', 'likes', 'comments', 'shares', 'saves')}})
+        if r['published_at'] and r['published_at'] > time.time() - 30 * 86400 and not is_removed:
+            day = time.strftime('%Y-%m-%d', time.localtime(r['published_at']))
+            d = daily.setdefault((day, bs), {'day': day, 'brand_set': bs, 'views': 0, 'posts': set()})
+            d['views'] += r['views'] or 0
+            d['posts'].add(r['remote_id'])
+    for d in daily.values():
+        d['posts'] = len(d['posts'])
+    # posts that are still publishing / failed exist only in the Mac's copy
+    for p in snap.get('posts', []):
+        if p.get('remote_id') not in posts and any(x.get('status') in ('publishing', 'failed') for x in p['platforms']):
+            posts[p.get('remote_id') or f"e{p['edit_id']}"] = p
+    out = dict(snap)
+    out['posts'] = sorted(posts.values(), key=lambda p: -(p['posted_at'] or 0))[:50]
+    out['daily'] = sorted(daily.values(), key=lambda d: d['day'])
+    st = c.execute('SELECT MAX(taken_at) FROM stats').fetchone()[0]
+    out['stats_at'] = st
+    out['received'] = read_json('meta.json', {}).get('received')
+    pending = {a['edit_id']: a['action'] for a in read_json('actions.json', [])}
+    for r in out.get('review', []):
+        r['pending'] = pending.get(r['edit_id'])
+        r['has_video'] = os.path.exists(os.path.join(VIDEOS, f"{r['edit_id']}.mp4"))
+    return out
+
+
+# ---------- web ----------
+def session_value():
+    return hmac.new(PASSWORD.encode(), b'ai-editor-dashboard-session', hashlib.sha256).hexdigest()
 
 
 LOGIN = '''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -82,8 +229,7 @@ class H(BaseHTTPRequestHandler):
         return False
 
     def machine(self):
-        auth = self.headers.get('Authorization', '')
-        return bool(TOKEN) and hmac.compare_digest(auth, f'Bearer {TOKEN}')
+        return bool(TOKEN) and hmac.compare_digest(self.headers.get('Authorization', ''), f'Bearer {TOKEN}')
 
     def body(self, limit=5 << 20):
         n = int(self.headers.get('Content-Length') or 0)
@@ -91,15 +237,12 @@ class H(BaseHTTPRequestHandler):
             raise ValueError('too large')
         return self.rfile.read(n)
 
-    # ---------- people ----------
     def do_GET(self):
         path = urllib.parse.urlparse(self.path).path
         if path == '/healthz':
             return self.send(200, {'ok': True})
         if path == '/api/actions':
-            if not self.machine():
-                return self.send(401, {'error': 'unauthorised'})
-            return self.send(200, read_json('actions.json', []))
+            return self.send(200, read_json('actions.json', [])) if self.machine() else self.send(401, {'error': 'unauthorised'})
         if not self.signed_in():
             if path.startswith('/api/') or path.startswith('/video/'):
                 return self.send(401, {'error': 'sign in'})
@@ -107,15 +250,11 @@ class H(BaseHTTPRequestHandler):
         if path in ('/', '/index.html'):
             return self.send(200, open(os.path.join(HERE, 'index.html'), 'rb').read(), 'text/html; charset=utf-8')
         if path == '/api/overview':
-            snap = read_json('snapshot.json', None)
-            if not snap:
-                return self.send(503, {'error': 'No data from the editing Mac yet'})
-            pending = {a['edit_id']: a['action'] for a in read_json('actions.json', [])}
-            for r in snap.get('review', []):
-                r['pending'] = pending.get(r['edit_id'])
-                r['has_video'] = os.path.exists(os.path.join(VIDEOS, f"{r['edit_id']}.mp4"))
-            snap['received'] = read_json('meta.json', {}).get('received')
-            return self.send(200, snap)
+            try:
+                out = overview()
+            except Exception as ex:
+                return self.send(500, {'error': f'Dashboard error: {ex}'})
+            return self.send(200, out) if out else self.send(503, {'error': 'Waiting for the first sync from the editing Mac'})
         m = re.match(r'^/video/(\d+)$', path)
         if m:
             return self.video(int(m.group(1)))
@@ -167,16 +306,13 @@ class H(BaseHTTPRequestHandler):
             if not self.signed_in():
                 return self.send(401, {'error': 'sign in'})
             eid, action = int(m.group(1)), m.group(2)
-            snap = read_json('snapshot.json', {})
-            if not any(r['edit_id'] == eid for r in snap.get('review', [])):
+            if not any(r['edit_id'] == eid for r in read_json('snapshot.json', {}).get('review', [])):
                 return self.send(409, {'error': f'edit {eid} is not waiting for review'})
             with LOCK:
                 acts = [a for a in read_json('actions.json', []) if a['edit_id'] != eid]
                 acts.append({'edit_id': eid, 'action': action, 'at': time.time()})
                 write_json('actions.json', acts)
-            return self.send(200, {'ok': True, 'edit_id': eid, 'queued': True,
-                                   'status': 'approved' if action == 'approve' else 'rejected'})
-        # ---------- the editing Mac ----------
+            return self.send(200, {'ok': True, 'edit_id': eid, 'queued': True})
         if not self.machine():
             return self.send(401, {'error': 'unauthorised'})
         if path == '/api/ingest':
@@ -220,8 +356,9 @@ class H(BaseHTTPRequestHandler):
 
 
 if __name__ == '__main__':
-    if not PASSWORD or not TOKEN:
-        print('warning: DASHBOARD_PASSWORD and INGEST_TOKEN must both be set; sign-in and syncing are off until they are')
+    if not (PASSWORD and TOKEN and os.environ.get('ZERNIO_API_KEY')):
+        print('warning: set DASHBOARD_PASSWORD, INGEST_TOKEN and ZERNIO_API_KEY', flush=True)
+    threading.Thread(target=refresher, daemon=True).start()
     port = int(os.environ.get('PORT', 8080))
-    print(f'AI editor dashboard (hosted) on :{port}, data in {DATA}')
+    print(f'AI editor dashboard (hosted) on :{port}, data in {DATA}', flush=True)
     ThreadingHTTPServer(('0.0.0.0', port), H).serve_forever()
