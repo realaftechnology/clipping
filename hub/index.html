@@ -191,11 +191,13 @@ const PF = {tiktok: ['TikTok', 'TT', h => `https://www.tiktok.com/@${h}`], insta
 const SLOTS = 10, W = 1400, H = 900, CX = 760, CY = 450;
 const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
 const fmt = n => n == null ? '–' : n >= 1e6 ? (n / 1e6).toFixed(1).replace(/\.0$/, '') + 'M' : n >= 1e4 ? Math.round(n / 1e3) + 'K' : n >= 1e3 ? (n / 1e3).toFixed(1).replace(/\.0$/, '') + 'K' : String(n);
+const safeUrl = u => /^https:\/\/[^"'<>\s\\]+$/.test(u || '') ? u : null;
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
 const ago = t => { const m = Math.round((Date.now() / 1000 - t) / 60); return m < 1 ? 'just now' : m < 60 ? m + ' min ago' : m < 1440 ? Math.round(m / 60) + ' h ago' : Math.round(m / 1440) + ' d ago'; };
 const when = t => new Date(t * 1000).toLocaleString([], {weekday: 'short', hour: 'numeric', minute: '2-digit'});
 const color = i => `var(--s${(i % 8) + 1})`;
 const pad = i => String(i + 1).padStart(2, '0');
+const safeHandle = h => /^@?[A-Za-z0-9._-]{1,40}$/.test(h || '') ? h.replace(/^@/, '') : '';
 const START = () => innerWidth < innerHeight ? -90 : 180;  // first editor's branches fan up on phones, left on wide screens
 const pol = (r, deg) => [CX + r * Math.cos(deg * Math.PI / 180), CY + r * Math.sin(deg * Math.PI / 180)];
 let D = null, open = new Set(), first = true, edges = [], particles = [], sheetFor = null, sig = '';
@@ -268,7 +270,7 @@ function draw() {
     edges.push({id, w: b.working ? 1.2 : 0.3, c: cE});
     const circ = 2 * Math.PI * 44, buf = Math.min(1, sched / 3);
     g += `<g class="node grow" tabindex="0" role="button" aria-label="Editor ${pad(i)}" onclick="toggle('${b.id}')" onkeydown="if(event.key==='Enter')toggle('${b.id}')"
-        onmousemove="tipShow(event,'<b>Editor ${pad(i)}</b><br>${redE ? `<span style=&quot;color:var(--bad)&quot;>${esc(why.join(' · ')).slice(0, 120)}</span><br>` : ''}${sched} scheduled · ${rev} in review<br><span style=&quot;color:var(--muted)&quot;>Tap to ${open.has(b.id) ? 'fold' : 'open'}</span>')" onmouseleave="tipHide()" style="color:${cE}">
+        data-tip="${esc(`<b>Editor ${pad(i)}</b><br>${redE ? `<span style="color:var(--bad)">${esc(why.join(' · ').slice(0, 120))}</span><br>` : ''}${+sched} scheduled · ${+rev} in review<br><span style="color:var(--muted)">Tap to ${open.has(b.id) ? 'fold' : 'open'}</span>`)}" onmousemove="tipShow(event,this.dataset.tip)" onmouseleave="tipHide()" style="color:${cE}">
       <circle cx="${x}" cy="${y}" r="74" fill="url(#halo)" class="${b.enabled ? 'breathe' : ''} ${redE ? 'alarm' : ''}"/>
       <circle cx="${x}" cy="${y}" r="38" fill="var(--node)" stroke="${cE}" stroke-width="2" class="ring ${redE ? 'alarm-ring' : ''}"/>
       <circle cx="${x}" cy="${y}" r="45" fill="none" stroke="var(--line)" stroke-width="3"/>
@@ -284,7 +286,7 @@ function draw() {
     lines.push(`<path id="${bid}" d="M${x},${y} L${bx},${by}" stroke="${cB}" stroke-opacity=".6" stroke-width="2" fill="none" class="${reduce ? '' : 'draw'}"/>`);
     edges.push({id: bid, w: 0.7, c: cB});
     g += `<g class="node grow" tabindex="0" role="button" aria-label="Editor ${pad(i)} brand set" onclick="showSet('${b.id}')" onkeydown="if(event.key==='Enter')showSet('${b.id}')"
-        onmousemove="tipShow(event,'<b>Brand set</b> · Editor ${pad(i)}<br>${setBad ? `<span style=&quot;color:var(--bad)&quot;>${aBad.length} account${aBad.length > 1 ? 's' : ''} with a problem</span><br>` : ''}Tap for stats and review')" onmouseleave="tipHide()" style="color:${cB};animation-delay:.1s">
+        data-tip="${esc(`<b>Brand set</b> · Editor ${pad(i)}<br>${setBad ? `<span style="color:var(--bad)">${aBad.length} account${aBad.length > 1 ? 's' : ''} with a problem</span><br>` : ''}Tap for stats and review`)}" onmousemove="tipShow(event,this.dataset.tip)" onmouseleave="tipHide()" style="color:${cB};animation-delay:.1s">
       <circle cx="${bx}" cy="${by}" r="74" fill="url(#halo)" class="breathe ${setBad ? 'alarm' : ''}"/>
       <circle cx="${bx}" cy="${by}" r="42" fill="var(--node)" stroke="${cB}" stroke-width="2" class="ring ${setBad ? 'alarm-ring' : ''}"/>
       <text class="sub" x="${bx}" y="${by - 13}" font-size="8" letter-spacing=".1em">BRAND SET</text>
@@ -296,16 +298,16 @@ function draw() {
     const n = b.accounts.length, fan = 32, L = 170;
     b.accounts.forEach((a, k) => {
       const pang = (ang + (k - (n - 1) / 2) * fan) * Math.PI / 180, px = bx + L * Math.cos(pang), py = by + L * Math.sin(pang), p = PF[a.platform] || [a.platform, a.platform.slice(0, 2).toUpperCase(), null];
-      const pid = `p${i}_${k}`, v = bsViews(b, a.platform), handle = (a.handle || '').replace(/^@/, '');
+      const pid = `p${i}_${k}`, v = bsViews(b, a.platform), handle = safeHandle(a.handle);
       const href = a.connected && handle && p[2] ? p[2](handle) : null, cP = a.issue ? bad : c;
       if (a.connected) {
         lines.push(`<path id="${pid}" d="M${bx},${by} L${px},${py}" stroke="${cP}" stroke-opacity=".55" stroke-width="1.5" fill="none" class="${reduce ? '' : 'draw'}"/>`);
         edges.push({id: pid, w: 0.35 + Math.min(1.6, v / 400), c: cP});
       } else lines.push(`<line x1="${bx}" y1="${by}" x2="${px}" y2="${py}" stroke="var(--ghost)" stroke-dasharray="3 6"/>`);
-      const tipTxt = a.connected ? `<b>${p[0]}</b> ${esc(a.handle || '')}<br>${a.issue ? `<span style=&quot;color:var(--bad)&quot;>${esc(a.issue).slice(0, 120)}</span><br>` : ''}${fmt(a.followers)} followers · ${fmt(v)} views<br><span style=&quot;color:var(--muted)&quot;>Open profile ↗</span>` : `<b>${p[0]}</b><br>Not connected yet`;
+      const tipTxt = a.connected ? `<b>${esc(p[0])}</b> ${esc(a.handle || '')}<br>${a.issue ? `<span style="color:var(--bad)">${esc(a.issue.slice(0, 120))}</span><br>` : ''}${esc(fmt(a.followers))} followers · ${esc(fmt(v))} views<br><span style="color:var(--muted)">Open profile ↗</span>` : `<b>${esc(p[0])}</b><br>Not connected yet`;
       const go = href ? `window.open('${href}','_blank','noopener')` : '';
       g += `<g class="${a.connected ? 'node' : 'ghost'} grow" ${href ? `tabindex="0" role="link" aria-label="${p[0]} profile" onclick="${go}" onkeydown="if(event.key==='Enter')${go}"` : ''}
-          onmousemove="tipShow(event,'${tipTxt}')" onmouseleave="tipHide()" style="color:${cP};animation-delay:${.2 + k * .07}s">
+          data-tip="${esc(tipTxt)}" onmousemove="tipShow(event,this.dataset.tip)" onmouseleave="tipHide()" style="color:${cP};animation-delay:${.2 + k * .07}s">
         ${a.connected ? `<circle cx="${px}" cy="${py}" r="46" fill="url(#halo)" class="${a.issue ? 'breathe alarm' : ''}"/>` : ''}
         <circle cx="${px}" cy="${py}" r="27" fill="${a.connected ? 'var(--node)' : 'none'}" stroke="${a.connected ? cP : 'var(--ghost)'}" stroke-width="${a.connected ? 2 : 1.5}" ${a.connected ? '' : 'stroke-dasharray="3 4"'} class="ring ${a.issue ? 'alarm-ring' : ''}"/>
         <text class="lbl" x="${px}" y="${py + 5}" font-size="14" ${a.connected ? '' : 'style="fill:var(--muted)"'}>${p[1]}</text>
@@ -316,9 +318,9 @@ function draw() {
   // the sourcing agent at the centre: full episodes in, raw moments out along every branch to the editors
   // (Matt, 2026-11-23: "replace the chief of staff with the sourcing agent. Because right now, I'm the chief of staff")
   const SO = D.sourcing || {held: 0, supplied: 0, episodes_done: 0}, sBad = !!SO.failed, cS = sBad ? 'var(--bad)' : 'var(--s1)';
-  const tipS = `<b>Sourcing agent</b><br>${SO.working ? `Working on ${esc(SO.working)}<br>` : ''}${sBad ? `<span style=&quot;color:var(--bad)&quot;>${esc(SO.failed).slice(0, 110)}</span><br>` : ''}${SO.episodes_done} episodes · ${SO.supplied} moments supplied<br>${SO.held} in review`;
+  const tipS = `<b>Sourcing agent</b><br>${SO.working ? `Working on ${esc(SO.working)}<br>` : ''}${sBad ? `<span style="color:var(--bad)">${esc(SO.failed.slice(0, 110))}</span><br>` : ''}${+SO.episodes_done} episodes · ${+SO.supplied} moments supplied<br>${+SO.held} in review`;
   g += `<g class="node" tabindex="0" role="button" aria-label="Sourcing agent" onclick="showSourcing()" onkeydown="if(event.key==='Enter')showSourcing()"
-      onmousemove="tipShow(event,'${tipS}')" onmouseleave="tipHide()" style="color:${cS}">
+      data-tip="${esc(tipS)}" onmousemove="tipShow(event,this.dataset.tip)" onmouseleave="tipHide()" style="color:${cS}">
     <circle cx="${CX}" cy="${CY}" r="96" fill="url(#halo)" class="breathe ${sBad ? 'alarm' : ''}"/>
     <circle cx="${CX}" cy="${CY}" r="68" fill="none" stroke="${cS}" stroke-opacity=".5" stroke-width="1.5" stroke-dasharray="2 7" class="spin"/>
     ${SO.working ? `<circle cx="${CX}" cy="${CY}" r="76" fill="none" stroke="${cS}" stroke-width="3" stroke-linecap="round" stroke-dasharray="60 418" class="orbit"/>` : ''}
@@ -441,14 +443,14 @@ function showSet(id, tab = 'overview') {
   if (tab === 'review') return sheet(head + reviewList(queue), () => showSet(id, 'review'));
   if (tab === 'chat') return showChat(id, head);
   const t = b.totals, c = b.counts, posts = D.posts.filter(p => p.brand_set === id && p.platforms.some(x => x.status !== 'removed')).slice(0, 8);
-  const accts = b.accounts.filter(a => a.connected).map(a => { const p = PF[a.platform], h = (a.handle || '').replace(/^@/, '');
-    return `<a href="${p[2](h)}" target="_blank" rel="noopener"><span class="h">${p[0]} ${esc(a.handle)}</span><span class="v">${fmt(a.followers)} followers ↗</span></a>`; }).join('');
+  const accts = b.accounts.filter(a => a.connected && PF[a.platform]).map(a => { const p = PF[a.platform], h = safeHandle(a.handle);
+    return `<a href="${esc(p[2](h))}" target="_blank" rel="noopener"><span class="h">${p[0]} ${esc(a.handle)}</span><span class="v">${fmt(a.followers)} followers ↗</span></a>`; }).join('');
   const probs = [b.editor_issue && ['Editor', b.editor_issue], ...b.accounts.filter(a => a.issue).map(a => [`${PF[a.platform][0]} ${esc(a.handle || '')}`, a.issue])].filter(Boolean);
   sheet(head + probs.map(([w, m]) => `<div class="issue"><b>${w}</b> · ${esc(m)}</div>`).join('') + `
     <div class="chips">${b.worker ? `<span class="chip">on ${esc(b.worker)}</span>` : ''}<span class="chip">${esc(b.format)}</span><span class="chip">${esc(b.look.captions.replace(/ \d+px/, ''))}</span>${b.theme && !/not set/i.test(b.theme) ? `<span class="chip">${esc(b.theme)}</span>` : ''}</div>
     <div class="nums"><div><b>${fmt(t.views)}</b><span>views</span></div><div><b>${t.posts}</b><span>posted</span></div><div><b>${t.posts ? fmt(Math.round(t.views / t.posts)) : '–'}</b><span>per clip</span></div>
       <div><b>${c.queued + c.approved}</b><span>scheduled</span></div><div><b>${c.ready + c.qa_failed}</b><span>in review</span></div><div><b>${c.excluded}</b><span>filtered</span></div></div>
-    ${(() => { const L = b.learning || {}, pct = (x, y) => y ? Math.round(100 * x / y) + '%' : '–';
+    ${(() => { const L = b.learning || {}, pct = (x, y) => y ? Math.round(100 * x / y) + '%' : '–';  // numbers: the hub types every field
       return `<div class="sec">Learning · last ${L.days || 14} days</div><div class="nums" style="margin-top:6px">
         <div><b>${pct(L.held, L.made)}</b><span>needed review</span></div><div><b>${pct(L.approved, L.approved + L.rejected)}</b><span>approved in review</span></div><div><b>${L.rules ?? 0}</b><span>rules learned</span></div></div>`; })()}
     ${b.next_post ? `<div class="sec">Next · ${when(b.next_post.slot)}</div><div style="margin-top:6px">${esc(b.next_post.hook)}</div>` : ''}
@@ -463,7 +465,7 @@ function showSet(id, tab = 'overview') {
         ${Ls.style ? `<h4>This editor's style notes</h4>${md(Ls.style)}` : ''}
         <p style="color:var(--muted);font-size:11px">From every editor's results${D.refs && D.refs.count ? ` and ${D.refs.count} high performers (${fmt(D.refs.views)} views)` : ''}. Content lessons are shared by all editors; style notes are this editor's own.</p></div></details>`; })()}
     <div class="sec">Accounts</div><div class="plist">${accts || '<div class="p">None connected</div>'}</div>
-    <div class="sec">Recent</div><div class="plist">${posts.map(p => { const v = p.platforms.reduce((a, x) => a + (x.views || 0), 0), u = (p.platforms.find(x => x.url) || {}).url;
+    <div class="sec">Recent</div><div class="plist">${posts.map(p => { const v = p.platforms.reduce((a, x) => a + (x.views || 0), 0), u = safeUrl((p.platforms.find(x => x.url) || {}).url);
       const lf = p.lift != null ? `<span class="lift ${p.lift < 1 ? 'low' : ''}">${p.lift}× usual</span>` : '';
       return u ? `<a href="${esc(u)}" target="_blank" rel="noopener"><span class="h">${esc(p.hook)}</span><span class="v">${fmt(v)}${lf}</span></a>` : `<div class="p"><span class="h">${esc(p.hook)}</span><span class="v">${fmt(v)}</span></div>`; }).join('') || '<div class="p">Nothing yet</div>'}</div>`, () => showSet(id, 'overview'));
 }
@@ -637,7 +639,8 @@ async function showAccess() {
     <div style="padding:8px 0"><input id="nw_id" placeholder="worker id, e.g. stl-01"><input id="nw_name" placeholder="name, e.g. St. Louis rack 1"><input id="nw_cid" placeholder="its Access service token client id">
       <div class="btns"><button class="ok" onclick="addWorker()">Add worker</button></div><div id="nw_tok"></div></div>
     <div class="sec">Editors</div>
-    ${A.editors.map(e => `<div class="row"><span>${esc(e.id)} · ${esc(e.name || '')}<small>${esc(e.status)} · on ${esc(e.worker_id)} · ${esc(Object.entries(JSON.parse(e.accounts || '{}')).map(([k]) => k).join(', '))}</small></span>
+    ${A.editors.map(e => `<div class="row"><span>${esc(e.id)} · ${esc(e.name || '')}<small>${esc(e.status)} · on ${esc(e.worker_id)}</small>${Object.entries(JSON.parse(e.accounts || '{}')).map(([pf, id]) =>
+      `<small>${esc(pf)} ${esc((e.handles || {})[pf] || '')} · Zernio ${esc(id)}${(e.usernames || {})[id] ? ' = @' + esc(e.usernames[id]) : ' (not seen in Zernio)'}</small>`).join('') || '<small>no accounts</small>'}</span>
       ${e.status === 'pending' ? `<button class="rbtn" onclick="admin('editors/${e.id}/approve')">Approve</button>` : ''}</div>`).join('')}
     <div class="sec">Recent sign-ins</div>${A.logins.slice(0, 10).map(l => `<div class="row"><span>${esc(l.identity)}${l.new_device ? ' <b style="color:var(--flag)">new device</b>' : ''}<small>${t(l.at)} · ${esc(l.country)} ${esc(l.ip)}</small></span></div>`).join('')}
     <div class="sec">Audit log · ${A.audit_ok.checked} entries, chain ${A.audit_ok.ok ? 'intact' : 'BROKEN'}</div><div id="auditlog"></div>

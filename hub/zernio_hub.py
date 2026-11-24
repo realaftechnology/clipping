@@ -6,7 +6,7 @@
   straight to Zernio's storage, then asks the hub to publish. The hub checks every call against the accounts of the
   editors that worker is approved to run, so a worker can't post to, read or remove anyone else's accounts.
 """
-import datetime as dt, json, os, sys, time, traceback
+import datetime as dt, json, os, re, sys, time, traceback
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
@@ -94,6 +94,8 @@ def backup():
     storage.delete(f'backups/hub-{old}.db')
     store.set_meta('backup_day', day)
     store.audit('hub', 'system', 'backup', f'backups/hub-{day}.db')
+    v = store.verify_audit()  # the chain's head goes out daily, so a cut-off or rewritten log can be spotted later
+    storage.put_bytes(f'backups/audit-head-{day}.json', json.dumps(v).encode(), 'application/json')
 
 
 def background():
@@ -179,7 +181,7 @@ def call(worker_id, op, a):
         return res
     if op in ('status', 'unpublish', 'post_stats', 'metrics'):
         rid = str(a.get('remote_id') or '')
-        if not rid or not _owns_post(worker_id, rid):
+        if not re.match(r'^[A-Za-z0-9_-]{1,64}$', rid) or not _owns_post(worker_id, rid):
             raise Refused('not one of this worker\'s posts')
         if op == 'status':
             return z.status(rid)
@@ -187,6 +189,8 @@ def call(worker_id, op, a):
             return z.post_stats(rid)
         if op == 'metrics':
             return z.metrics(rid, a.get('platform'), a.get('account'))
+        if a.get('platform') not in ('tiktok', 'instagram', 'youtube', 'facebook', 'x', 'twitter'):
+            raise Refused('bad platform')
         z.unpublish(rid, a.get('platform'))
         store.audit(worker_id, 'worker', 'unpublish', rid, {'platform': a.get('platform')})
         return {'ok': True}

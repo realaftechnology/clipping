@@ -24,7 +24,7 @@ sys.path.insert(0, ROOT)
 if hasattr(time, 'tzset'):
     time.tzset()
 
-import auth, clips, overview, storage, store, zernio_hub  # noqa: E402
+import auth, clean, clips, overview, storage, store, zernio_hub  # noqa: E402
 import directives as dv  # noqa: E402
 
 PORT = int(os.environ.get('PORT', 8080))
@@ -67,6 +67,21 @@ def send_alert(text, level='warn'):
 
 def editor_row(eid):
     return store.db().execute("SELECT * FROM editors WHERE id=? AND status='approved'", (eid,)).fetchone()
+
+
+def item_editor(it):
+    """Which editor a clip belongs to, from its own worker's latest report ('__sourcing' for raw moments)."""
+    if it['kind'] == 'sourced':
+        return '__sourcing'
+    row = store.db().execute('SELECT snap FROM snapshots WHERE worker_id=?', (it['worker_id'],)).fetchone()
+    snap = json.loads(row['snap']) if row else {}
+    for r in snap.get('review', []):
+        if r['edit_id'] == it['local_id']:
+            return r['brand_set']
+    for bs in snap.get('brand_sets', []):
+        if any(x['edit_id'] == it['local_id'] for x in bs.get('scheduled', [])):
+            return bs['id']
+    return None
 
 
 def chat_payload(eid, after=0):
@@ -123,6 +138,13 @@ def mark_sent(p):
         c.execute("UPDATE chat_jobs SET status='sent', sent_at=? WHERE id=?", (t, j['job_id']))
 
 
+def current_role(email):
+    if email == auth.OWNER:
+        return 'admin'
+    r = store.db().execute('SELECT role FROM users WHERE email=? AND active=1', (email,)).fetchone()
+    return r['role'] if r else 'none'
+
+
 def take_chat_reply(worker, a):
     """A worker's chat agent answered: store the reply and turn its proposed actions into checked directives."""
     c = store.db()
@@ -137,20 +159,22 @@ def take_chat_reply(worker, a):
     cur = c.execute('INSERT INTO chat(editor,role,author,text,at) VALUES(?,?,?,?,?)',
                     (j['editor'], 'assistant', j['editor'], str(a.get('reply') or '')[:6000], now()))
     mid, made = cur.lastrowid, []
-    for act in (a.get('actions') or [])[:5]:
-        name, params = act.get('action'), act.get('params') or {}
+    role = current_role(j['by_email'])  # a person demoted or removed since asking gets no more than they have now
+    for act in (a.get('actions') or [])[:5] if isinstance(a.get('actions'), list) else []:
+        act = act if isinstance(act, dict) else {}
+        name, params = act.get('action'), act.get('params') if isinstance(act.get('params'), dict) else {}
         try:
-            p = dv.validate(name, params, j['by_role'])
+            p = dv.validate(name, params, role)
             limit = RATE.get(j['by_role'], {}).get('directives')
             if limit and recent('directives', 'requested_by', j['by_email']) >= limit:
                 raise dv.Invalid(f'rate limit: at most {limit} directives an hour')
-            st = 'proposed' if dv.needs_approval(name, j['by_role'], p, owner=j['by_email'] == auth.OWNER) else 'approved'
+            st = 'proposed' if dv.needs_approval(name, role, p, owner=j['by_email'] == auth.OWNER) else 'approved'
             summary = dv.describe(name, p)
         except dv.Invalid as ex:
             p, st, summary = params, 'refused', f'{name}: {ex}'
         d = c.execute('INSERT INTO directives(editor,action,params,summary,status,requested_by,requested_role,message_id,created) '
                       'VALUES(?,?,?,?,?,?,?,?,?)', (j['editor'], str(name)[:40], json.dumps(p)[:4000], summary[:500], st, j['by_email'],
-                                                    j['by_role'], mid, now())).lastrowid
+                                                    role, mid, now())).lastrowid
         store.audit(j['by_email'], 'user', f'directive.{st}', j['editor'], {'directive': d, 'action': name, 'params': p, 'via': 'chat'})
         made.append(d)
         if st == 'proposed':
@@ -198,38 +222,60 @@ def learning(worker, push):
     and every review reason reach every editor (Matt: "I want all new lessons to be applied to all agents")."""
     c = store.db()
     out = {'docs': {}, 'rules': [], 'feedback': [], 'conflicts': []}
-    for name, d in (push.get('docs') or {}).items():
-        if name not in DOCS or d.get('text') is None:
+    lead = store.meta('lead_worker')
+    for name, d in clean.dct(push.get('docs')).items():
+        d = clean.dct(d)
+        if name not in DOCS or not isinstance(d.get('text'), str):
             continue
-        cur = c.execute('SELECT version FROM docs WHERE name=?', (name,)).fetchone()
+        if name == 'output_spec' and worker.id != lead:
+            continue  # Matt's written spec comes only from the lead machine (his Mac), never from other workers
+        cur = c.execute('SELECT version, text FROM docs WHERE name=?', (name,)).fetchone()
         if cur is None or cur['version'] == d.get('base'):
             v = (cur['version'] if cur else 0) + 1
-            c.execute('INSERT OR REPLACE INTO docs VALUES(?,?,?,?,?)', (name, v, str(d['text'])[:400000], worker.id, now()))
+            text = d['text'][:400000]
+            c.execute('INSERT OR REPLACE INTO docs VALUES(?,?,?,?,?)', (name, v, text, worker.id, now()))
+            c.execute('INSERT INTO docs_history(name,version,text,by,at) VALUES(?,?,?,?,?)', (name, v, text, worker.id, now()))
+            store.audit(worker.id, 'worker', 'doc.update', name, {'version': v, 'chars': len(text), 'was': len(cur['text']) if cur else 0})
         else:
             out['conflicts'].append(name)
     known = push.get('known') or {}
     for r in c.execute('SELECT * FROM docs'):
         if known.get(r['name']) != r['version']:
             out['docs'][r['name']] = {'version': r['version'], 'text': r['text']}
-    for r in (push.get('rules') or [])[:500]:
-        uid = f"{worker.id}-{int(r['local_id'])}"
+    new_today = c.execute('SELECT COUNT(*) FROM net_rules WHERE origin=? AND at>?', (worker.id, now() - 86400)).fetchone()[0]
+    for r in clean.lst(push.get('rules'), 500):
+        r = clean.dct(r)
+        uid = f"{worker.id}-{clean.i(r.get('local_id'), 0)}"
         ed = r.get('editor')
-        if ed and ed not in worker.editors:
+        if ed is not None and ed not in worker.editors:
             continue
-        c.execute('INSERT OR REPLACE INTO net_rules VALUES(?,?,?,?,?,?,?,?,?)', (uid, str(r.get('kind'))[:10], str(r.get('rule'))[:1000],
-                  str(r.get('reason') or '')[:1000], ed, 1 if r.get('active') else 0, worker.id, r.get('at') or now(), now()))
+        old = c.execute('SELECT rule, active FROM net_rules WHERE uid=?', (uid,)).fetchone()
+        rule, active = clean.s(r.get('rule'), 1000), 1 if r.get('active') else 0
+        if old and old['rule'] == rule and old['active'] == active:
+            continue
+        if not old:
+            if new_today >= 40:  # a machine learning more than this in a day is broken or compromised: stop and tell Matt
+                if not store.meta(f'rules_capped_{worker.id}'):
+                    send_alert(f'Worker {worker.label()} sent more than 40 new network rules in a day; the rest are held back.')
+                    store.set_meta(f'rules_capped_{worker.id}', True)
+                break
+            new_today += 1
+        c.execute('INSERT OR REPLACE INTO net_rules VALUES(?,?,?,?,?,?,?,?,?)', (uid, clean.s(r.get('kind'), 10), rule, clean.s(r.get('reason'), 1000),
+                  ed, active, worker.id, clean.t(r.get('at')) or now(), now()))
+        store.audit(worker.id, 'worker', 'rule.learned' if not old else 'rule.changed', uid, {'rule': rule[:300], 'editor': ed, 'active': active})
     eds = worker.editors or []
     out['rules'] = [dict(r) for r in c.execute('SELECT * FROM net_rules WHERE origin!=?', (worker.id,))
                     if r['editor'] is None or r['editor'] in eds]
     out['feedback_upto'] = None
-    for f in (push.get('feedback') or [])[:500]:
+    for f in clean.lst(push.get('feedback'), 500):
+        f = clean.dct(f)
         if f.get('editor') not in eds:
             break  # not approved here yet: the worker sends it again later
-        out['feedback_upto'] = int(f['local_id'])
-        c.execute('INSERT OR IGNORE INTO net_feedback VALUES(?,?,?,?,?,?,?,?,?)', (f"{worker.id}-{int(f['local_id'])}", f['editor'], f.get('action'),
-                  str(f.get('reason') or '')[:1000], str(f.get('hook') or '')[:300], str(f.get('note') or '')[:1500],
-                  str(f.get('transcript') or '')[:600], f.get('at') or now(), worker.id))
-    since = float(push.get('feedback_since') or 0)
+        out['feedback_upto'] = clean.i(f.get('local_id'), 0)
+        c.execute('INSERT OR IGNORE INTO net_feedback VALUES(?,?,?,?,?,?,?,?,?)', (f"{worker.id}-{out['feedback_upto']}", f['editor'],
+                  'reject' if f.get('action') == 'reject' else 'approve', clean.s(f.get('reason'), 1000), clean.s(f.get('hook'), 300),
+                  clean.s(f.get('note'), 1500), clean.s(f.get('transcript'), 600), clean.t(f.get('at')) or now(), worker.id))
+    since = clean.t(push.get('feedback_since')) or 0
     out['feedback'] = [dict(r) for r in c.execute('SELECT * FROM net_feedback WHERE origin!=? AND at>? ORDER BY at LIMIT 300', (worker.id, since))]
     return out
 
@@ -239,40 +285,47 @@ def worker_sync(worker, body, ip):
     info = body.get('info') or {}
     c.execute('UPDATE workers SET last_seen=?, last_ip=?, info=? WHERE id=?', (now(), ip, json.dumps(info)[:2000], worker.id))
     # editors this machine says it runs: new ones wait for Matt to approve them (and lock their accounts)
-    for eid, e in (body.get('editors') or {}).items():
-        if not re.match(r'^[a-z0-9-]{1,40}$', eid):
+    new = []
+    for eid, e in list(clean.dct(body.get('editors')).items())[:50]:
+        if not clean.eid(eid) or not isinstance(e, dict):
             continue
         r = c.execute('SELECT * FROM editors WHERE id=?', (eid,)).fetchone()
-        settings = e.get('editor') or {}
+        settings = clean.dct(e.get('editor'))
+        blob = lambda v: json.dumps(v)[:50000]
         if r is None:
+            if len(new) >= 5 or c.execute("SELECT COUNT(*) FROM editors WHERE worker_id=? AND status='pending'", (worker.id,)).fetchone()[0] >= 20:
+                continue
+            accts = {k: v for k, v in clean.dct(settings.get('accounts')).items() if k in clean.PLATFORMS and isinstance(v, str) and clean.REMOTE.match(v)}
             c.execute("INSERT INTO editors(id,worker_id,name,accounts,status,settings,style,notes,reported_at) VALUES(?,?,?,?,?,?,?,?,?)",
-                      (eid, worker.id, str(settings.get('name'))[:60], json.dumps(settings.get('accounts') or {}), 'pending',
-                       json.dumps(settings), json.dumps(e.get('style') or {}), json.dumps(e.get('notes') or []), now()))
-            send_alert(f"Worker {worker.label()} reported a new editor {eid}; approve it in the hub before it can post through it.")
+                      (eid, worker.id, clean.s(settings.get('name'), 60), json.dumps(accts), 'pending',
+                       blob(settings), blob(clean.dct(e.get('style'))), blob(clean.lst(e.get('notes'), 200)), now()))
+            new.append(eid)
         elif r['worker_id'] == worker.id:
             if r['status'] == 'approved' and json.loads(r['accounts'] or '{}') != (settings.get('accounts') or {}):
                 if not store.meta(f'acct_warned_{eid}'):
                     send_alert(f"{eid} on {worker.label()} now lists different accounts than the ones you approved; posting stays limited to the approved ones.")
                     store.set_meta(f'acct_warned_{eid}', True)
             c.execute('UPDATE editors SET settings=?, style=?, notes=?, reported_at=? WHERE id=?',
-                      (json.dumps(settings), json.dumps(e.get('style') or {}), json.dumps(e.get('notes') or []), now(), eid))
+                      (blob(settings), blob(clean.dct(e.get('style'))), blob(clean.lst(e.get('notes'), 200)), now(), eid))
+    if new:
+        send_alert(f"Worker {worker.label()} reported new editor(s) {', '.join(new)}; approve them in the hub's Access panel before they can post.")
     if body.get('snapshot') is not None:
-        c.execute('INSERT OR REPLACE INTO snapshots VALUES(?,?,?)', (worker.id, json.dumps(body['snapshot'])[:20000000], now()))
+        c.execute('INSERT OR REPLACE INTO snapshots VALUES(?,?,?)', (worker.id, json.dumps(clean.snapshot(body['snapshot'])), now()))
     take_acks(worker, body.get('acks') or {})
     out = pending_for(worker.id)
     mark_sent(out)
     out['learning'] = learning(worker, body.get('learning') or {})
     # clips the page needs that the hub doesn't have yet: one signed upload link each (a few per sync)
     have, want = clips.have(), []
-    for x in (body.get('clips') or [])[:200]:
+    for x in clean.lst(body.get('clips'), 200):
+        x = clean.dct(x)
         if x.get('kind') not in ('edit', 'sourced'):
             continue
+        x['id'] = clean.i(x.get('id'), 0)
         g = store.gid(worker.id, x['kind'], x['id'])
         if g not in have and len(want) < 4:
             want.append({'kind': x['kind'], 'id': x['id'], 'gid': g, 'url': clips.upload_url(g)})
     out['upload'] = want
-    out['clip_gids'] = {f"{x['kind']}:{x['id']}": store.gid(worker.id, x['kind'], x['id']) for x in (body.get('clips') or [])[:200]
-                        if x.get('kind') in ('edit', 'sourced')}
     return out
 
 
@@ -316,8 +369,8 @@ class H(BaseHTTPRequestHandler):
 
     def body(self, limit=MAX_BODY):
         n = int(self.headers.get('Content-Length') or 0)
-        if n > limit:
-            raise ValueError('too large')
+        if n < 0 or n > limit:
+            raise ValueError('bad length')
         return self.rfile.read(n) if n else b''
 
     def json_body(self, limit=MAX_BODY):
@@ -400,7 +453,7 @@ class H(BaseHTTPRequestHandler):
                 return self.video(w, int(m.group(2)), 'sourced' if m.group(1) == 'sourced' else 'edit')
             m = re.match(r'^/api/chat/([a-z0-9-]{1,40})$', path)
             if m:
-                if not w.sees(m.group(1)):
+                if not w.can('director') or not w.sees(m.group(1)):
                     return self.send(403, {'error': 'not your editor'})
                 after = int(urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query).get('after', ['0'])[0] or 0)
                 return self.send(200, chat_payload(m.group(1), after))
@@ -414,7 +467,10 @@ class H(BaseHTTPRequestHandler):
                     'users': [dict(r) for r in c.execute('SELECT email, name, role, editors, client_id, active, added_at FROM users ORDER BY email')],
                     'owner': auth.OWNER,
                     'workers': [dict(r) for r in c.execute('SELECT id, name, access_client_id, active, created_at, last_seen, last_ip, info FROM workers')],
-                    'editors': [dict(r) for r in c.execute('SELECT id, worker_id, name, accounts, status, reported_at, approved_by FROM editors')],
+                    'editors': [dict(r, handles=clean.dct(json.loads(r['settings'] or '{}').get('handles')),
+                                     usernames={x['account']: x['username'] for x in c.execute('SELECT account, username FROM zfollowers GROUP BY account')})
+                                for r in c.execute('SELECT id, worker_id, name, accounts, settings, status, reported_at, approved_by FROM editors')],
+                    'lead_worker': store.meta('lead_worker'),
                     'alerts': [dict(r) for r in c.execute('SELECT * FROM alerts ORDER BY id DESC LIMIT 50')],
                     'logins': [dict(r) for r in c.execute('SELECT identity, ip, country, agent, at, new_device FROM logins ORDER BY id DESC LIMIT 30')],
                     'audit_ok': store.verify_audit()})
@@ -447,8 +503,7 @@ class H(BaseHTTPRequestHandler):
         if not it or it['kind'] != kind:
             return self.send(404, {'error': 'no video'})
         r = store.db().execute('SELECT * FROM clips WHERE gid=?', (g,)).fetchone()
-        ed = store.db().execute("SELECT id FROM editors WHERE worker_id=?", (it['worker_id'],)).fetchall()
-        if kind == 'edit' and not any(w.sees(e['id']) for e in ed):
+        if not w.sees(item_editor(it)):
             return self.send(403, {'error': 'not your editor'})
         if not r:
             return self.send(404, {'error': 'no video yet'})
@@ -535,8 +590,11 @@ class H(BaseHTTPRequestHandler):
         # undo
         if d['status'] != 'applied':
             return self.send(409, {'error': 'only applied changes can be undone'})
-        if not w.can('director') or (d['action'] == 'add_rule' and not w.owner):
-            return self.send(403, {'error': 'not allowed'})
+        if not w.owner and (not w.can('director') or d['requested_by'] != w.id or d['action'] == 'add_rule'):
+            return self.send(403, {'error': 'you can undo only your own changes; Matt can undo any'})
+        undo_vals = json.loads(d['undo'] or '{}')
+        if d['action'] == 'set_posting' and not w.owner and dv.needs_approval('set_posting', w.role, {k: v for k, v in undo_vals.items() if k in ('enabled', 'auto_post')}):
+            return self.send(403, {'error': 'undoing this would turn posting back on; only Matt can'})
         if d['action'] == 'reedit':
             return self.send(409, {'error': 'a re-edit made a new version; reject it in review instead'})
         if d['action'] == 'add_rule':
@@ -560,7 +618,7 @@ class H(BaseHTTPRequestHandler):
         if what == 'users':
             email = str(a.get('email') or '').strip().lower()
             role = a.get('role')
-            if not re.match(r'^[^@\s]+@[^@\s]+\.[^@\s]+$', email) or email == auth.OWNER:
+            if not re.match(r'^[a-z0-9._%+-]{1,64}@[a-z0-9.-]{1,180}\.[a-z]{2,24}$', email) or email == auth.OWNER:
                 return self.send(400, {'error': 'give an email address (not your own)'})
             if role not in ('viewer', 'reviewer', 'director'):
                 return self.send(400, {'error': 'role is viewer, reviewer or director (admin is only Matt)'})
@@ -568,6 +626,10 @@ class H(BaseHTTPRequestHandler):
             if eds is not None and not (isinstance(eds, list) and all(isinstance(x, str) for x in eds)):
                 return self.send(400, {'error': 'editors is a list of editor ids, or empty for all'})
             cid = str(a.get('client_id') or '').strip() or None
+            if cid and not re.match(r'^[A-Za-z0-9._-]{4,100}$', cid):
+                return self.send(400, {'error': 'that service token client id looks wrong'})
+            if eds and not all(clean.eid(x) for x in eds):
+                return self.send(400, {'error': 'editor ids look like editor-01'})
             c.execute('INSERT OR REPLACE INTO users(email,name,role,editors,client_id,active,added_by,added_at) VALUES(?,?,?,?,?,1,?,?)',
                       (email, str(a.get('name') or '')[:60], role, json.dumps(eds) if eds else None, cid, w.id, now()))
             store.audit(w.id, 'user', 'user.set', email, {'role': role, 'editors': eds, 'client_id': cid}, self.ip())
@@ -575,17 +637,22 @@ class H(BaseHTTPRequestHandler):
             return self.send(200, {'ok': True})
         m = re.match(r'^users/(.+)/remove$', what)
         if m:
-            c.execute('UPDATE users SET active=0 WHERE email=?', (m.group(1).lower(),))
-            store.audit(w.id, 'user', 'user.remove', m.group(1).lower(), {}, self.ip())
+            email = urllib.parse.unquote(m.group(1)).lower()
+            if not c.execute('UPDATE users SET active=0 WHERE email=? AND active=1', (email,)).rowcount:
+                return self.send(404, {'error': f'{email} is not an active user'})
+            store.audit(w.id, 'user', 'user.remove', email, {}, self.ip())
+            send_alert(f'Hub access removed: {email}.', 'info')
             return self.send(200, {'ok': True})
         if what == 'workers':
             wid = str(a.get('id') or '').strip().lower()
             cid = str(a.get('access_client_id') or '').strip()
-            if not re.match(r'^[a-z0-9-]{2,30}$', wid) or not cid:
+            if not re.match(r'^[a-z0-9-]{2,30}$', wid) or not re.match(r'^[A-Za-z0-9._-]{4,100}$', cid):
                 return self.send(400, {'error': 'give a short worker id (letters, digits, dashes) and its Access service token client id'})
             tok = secrets.token_urlsafe(32)
             c.execute('INSERT OR REPLACE INTO workers(id,name,token_hash,access_client_id,active,created_by,created_at) VALUES(?,?,?,?,1,?,?)',
                       (wid, str(a.get('name') or wid)[:60], auth.token_hash(tok), cid, w.id, now()))
+            if not store.meta('lead_worker'):  # the first machine (Matt's Mac) holds the written Output Spec
+                store.set_meta('lead_worker', wid)
             store.audit(w.id, 'user', 'worker.create', wid, {'access_client_id': cid}, self.ip())
             return self.send(200, {'ok': True, 'id': wid, 'token': tok, 'note': 'Shown once. Put it in the worker\'s secrets file.'})
         m = re.match(r'^workers/([a-z0-9-]+)/(revoke|restore)$', what)
@@ -599,8 +666,15 @@ class H(BaseHTTPRequestHandler):
             if not r:
                 return self.send(404, {'error': 'no such editor'})
             if m.group(2) == 'approve':
+                accts = json.loads(r['accounts'] or '{}')
+                taken = {}
+                for o in c.execute("SELECT id, accounts FROM editors WHERE status='approved' AND id!=?", (r['id'],)):
+                    for aid in json.loads(o['accounts'] or '{}').values():
+                        taken[aid] = o['id']
+                clash = [f"{pf} {aid} (already {taken[aid]})" for pf, aid in accts.items() if aid in taken]
+                if clash:
+                    return self.send(409, {'error': 'these accounts belong to another editor: ' + ', '.join(clash)})
                 settings = json.loads(r['settings'] or '{}')
-                accts = settings.get('accounts') or {}
                 c.execute("UPDATE editors SET status='approved', accounts=?, name=?, approved_by=?, approved_at=? WHERE id=?",
                           (json.dumps(accts), settings.get('name'), w.id, now(), r['id']))
                 store.set_meta(f"acct_warned_{r['id']}", False)

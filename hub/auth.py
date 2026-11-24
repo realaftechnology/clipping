@@ -26,7 +26,7 @@ GATE_SECRET = os.environ.get('GATE_SECRET', '')
 OWNER = os.environ.get('HUB_OWNER_EMAIL', '').strip().lower()
 SESSION_HOURS = float(os.environ.get('SESSION_HOURS', 12))
 REAUTH_MINUTES = float(os.environ.get('REAUTH_MINUTES', 60))
-TEST = os.environ.get('HUB_ENV') == 'test'
+TEST = os.environ.get('HUB_ENV') == 'test' and not os.environ.get('RAILWAY_ENVIRONMENT')  # never on the real host
 
 _jwks = None
 

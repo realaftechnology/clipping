@@ -19,6 +19,12 @@ def build(who):
     workers = {r['id']: dict(r) for r in c.execute('SELECT id, name, active, last_seen, info FROM workers')}
     pending = {(r['gid']): r['action'] for r in c.execute('SELECT gid, action FROM review_actions WHERE done_at IS NULL')}
     sets, review, log, src, refs, posts_snap, beats = [], [], [], None, {'count': 0, 'views': 0}, [], []
+    lead = store.meta('lead_worker')
+    owned = {}  # remote post id -> editor, from the hub's own Zernio data: a worker can only label its own editors' posts
+    for e in eds.values():
+        for aid in (json.loads(e['accounts'] or '{}') or {}).values():
+            for r in c.execute('SELECT remote_id FROM zposts WHERE account=?', (aid,)):
+                owned[r['remote_id']] = e['id']
     for s in c.execute('SELECT * FROM snapshots ORDER BY worker_id'):
         w = workers.get(s['worker_id'])
         if not w or not w['active']:
@@ -41,18 +47,19 @@ def build(who):
                 r['pending'] = pending.get(r['edit_id'])
                 review.append(r)
         for p in snap.get('posts', []):
-            if p.get('brand_set') in mine:
+            if p.get('brand_set') in mine and (not p.get('remote_id') or owned.get(p['remote_id'], p['brand_set']) == p['brand_set']):
                 p['edit_id'] = g('edit', p['edit_id'])
                 posts_snap.append(p)
         so = snap.get('sourcing')
-        if so and so.get('enabled') and src is None and who.sees('__sourcing'):
+        if so and so.get('enabled') and s['worker_id'] == lead and who.sees('__sourcing'):
             for r in so.get('queue', []):
                 r['id'] = g('sourced', r['id'])
                 r['has_video'] = r['id'] in have
                 r['pending'] = pending.get(r['id'])
             src = so
         tag = '' if len(workers) < 2 else f"[{w['name']}] "
-        log += [l[:20] + tag + l[20:] for l in snap.get('log', [])]
+        if who.editors is None:  # the activity feed covers every editor on the machine: only for people who see them all
+            log += [l[:20] + tag + l[20:] for l in snap.get('log', [])]
         rf = snap.get('refs') or {}
         refs = {'count': max(refs['count'], rf.get('count') or 0), 'views': max(refs['views'], rf.get('views') or 0)}
         beats.append(snap.get('last_run') or {})

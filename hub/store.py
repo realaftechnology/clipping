@@ -4,13 +4,16 @@ Holds: people and roles, workers and their editors, each editor's settings as la
 actions, chat history, directives, shared lessons (content profile, performance playbook, network rules, review
 feedback), posts and stats pulled from Zernio, login events and alerts, and an append-only, hash-chained audit log.
 """
-import hashlib, json, os, sqlite3, threading, time
+import hashlib, hmac, json, os, sqlite3, threading, time
 
 DATA = os.environ.get('DATA_DIR', os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data'))
 os.makedirs(DATA, exist_ok=True)
 PATH = os.path.join(DATA, 'hub.db')
 _local = threading.local()
 AUDIT_LOCK = threading.Lock()
+# The audit chain is keyed (HMAC) with a secret kept outside the database, so someone with the database alone can't
+# rewrite history and recompute the chain. The head is also sent out daily (zernio_hub.backup) so a cut-off tail shows.
+AUDIT_KEY = (os.environ.get('AUDIT_KEY') or 'local-test-only').encode()
 
 SCHEMA = '''
 CREATE TABLE IF NOT EXISTS users(
@@ -41,6 +44,7 @@ CREATE TABLE IF NOT EXISTS directives(
   created REAL, sent_at REAL, applied_at REAL, result TEXT, undo TEXT, undo_requested INTEGER DEFAULT 0, undone_at REAL);
 CREATE TABLE IF NOT EXISTS docs(
   name TEXT PRIMARY KEY, version INTEGER, text TEXT, updated_by TEXT, updated_at REAL);
+CREATE TABLE IF NOT EXISTS docs_history(id INTEGER PRIMARY KEY, name TEXT, version INTEGER, text TEXT, by TEXT, at REAL);
 CREATE TABLE IF NOT EXISTS net_rules(
   uid TEXT PRIMARY KEY, kind TEXT, rule TEXT, reason TEXT, editor TEXT, active INTEGER, origin TEXT, at REAL, updated REAL);
 CREATE TABLE IF NOT EXISTS net_feedback(
@@ -100,7 +104,7 @@ def audit(actor, actor_kind, action, target='', detail=None, ip=''):
         prev = last['hash'] if last else ''
         at = time.time()
         d = json.dumps(detail or {}, sort_keys=True, default=str)
-        h = hashlib.sha256(json.dumps([prev, at, actor, actor_kind, action, target, d, ip]).encode()).hexdigest()
+        h = hmac.new(AUDIT_KEY, json.dumps([prev, at, actor, actor_kind, action, target, d, ip]).encode(), hashlib.sha256).hexdigest()
         c.execute('INSERT INTO audit(at,actor,actor_kind,action,target,detail,ip,prev,hash) VALUES(?,?,?,?,?,?,?,?,?)',
                   (at, actor, actor_kind, action, target, d, ip, prev, h))
         return h
@@ -110,11 +114,12 @@ def verify_audit():
     prev = ''
     n = 0
     for r in db().execute('SELECT * FROM audit ORDER BY id'):
-        h = hashlib.sha256(json.dumps([prev, r['at'], r['actor'], r['actor_kind'], r['action'], r['target'], r['detail'], r['ip']]).encode()).hexdigest()
+        h = hmac.new(AUDIT_KEY, json.dumps([prev, r['at'], r['actor'], r['actor_kind'], r['action'], r['target'], r['detail'], r['ip']]).encode(),
+                     hashlib.sha256).hexdigest()
         if r['prev'] != prev or r['hash'] != h:
             return {'ok': False, 'broken_at': r['id'], 'checked': n}
         prev, n = h, n + 1
-    return {'ok': True, 'checked': n}
+    return {'ok': True, 'checked': n, 'head': prev[:16]}
 
 
 def alert(text, level='warn'):
