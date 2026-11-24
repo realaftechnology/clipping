@@ -10,7 +10,7 @@
   --bg: #08090b; --bg-2: #0f1114; --panel: #14171b; --line: #262a30;
   --text: #f0efec; --text-2: #a9aaa4; --muted: #6c6e6a;
   --node: #15181d; --node-ring: #3a414b; --ghost: #262a31;
-  --live: #22c55e; --flag: #ec835a;
+  --live: #22c55e; --flag: #ec835a; --bad: #ff4d4f;
   --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181; --s6: #0ca30c; --s7: #9085e9; --s8: #e66767;
   --glow: 0.5;
 }
@@ -20,7 +20,7 @@
     --bg: #f3f3f0; --bg-2: #ecebe7; --panel: #fcfcfb; --line: #dddcd6;
     --text: #0b0b0b; --text-2: #52514e; --muted: #8a8984;
     --node: #fcfcfb; --node-ring: #cfcec7; --ghost: #dcdbd5;
-    --live: #0ca30c; --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100; --s5: #e87ba4; --s6: #008300; --s7: #6250d6; --s8: #e34948;
+    --live: #0ca30c; --bad: #d03b3b; --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100; --s5: #e87ba4; --s6: #008300; --s7: #6250d6; --s8: #e34948;
     --glow: 0.28;
   }
 }
@@ -29,7 +29,7 @@
   --bg: #f3f3f0; --bg-2: #ecebe7; --panel: #fcfcfb; --line: #dddcd6;
   --text: #0b0b0b; --text-2: #52514e; --muted: #8a8984;
   --node: #fcfcfb; --node-ring: #cfcec7; --ghost: #dcdbd5;
-  --live: #0ca30c; --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100; --s5: #e87ba4; --s6: #008300; --s7: #6250d6; --s8: #e34948;
+  --live: #0ca30c; --bad: #d03b3b; --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100; --s5: #e87ba4; --s6: #008300; --s7: #6250d6; --s8: #e34948;
   --glow: 0.28;
 }
 * { box-sizing: border-box; }
@@ -60,6 +60,11 @@ body { margin: 0; background: radial-gradient(ellipse at 54% 50%, var(--bg-2), v
 @keyframes spin { to { transform: rotate(360deg); } }
 .breathe { animation: breathe 3.2s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
 @keyframes breathe { 50% { opacity: .35; transform: scale(1.12); } }
+.alarm { animation-duration: 1.1s !important; }
+.alarm-ring { animation: flash 1.1s ease-in-out infinite; }
+@keyframes flash { 50% { stroke-width: 4; } }
+.issue { background: color-mix(in srgb, var(--bad) 14%, transparent); border: 1px solid color-mix(in srgb, var(--bad) 45%, transparent); color: var(--text); border-radius: 10px; padding: 9px 11px; font-size: 13px; margin-bottom: 12px; }
+.issue b { color: var(--bad); }
 .grow { animation: grow .5s cubic-bezier(.2,.9,.3,1.2) both; transform-box: fill-box; transform-origin: center; }
 @keyframes grow { from { transform: scale(.2); opacity: 0; } }
 .draw { stroke-dasharray: 900; stroke-dashoffset: 900; animation: draw .8s ease-out forwards; }
@@ -188,27 +193,31 @@ function draw() {
       continue;
     }
     const c = color(i), sched = b.counts.queued + b.counts.approved, rev = b.counts.ready + b.counts.qa_failed, id = `e${i}`;
-    lines.push(`<path id="${id}" d="M${CX},${CY} L${x},${y}" stroke="${c}" stroke-opacity=".45" stroke-width="1.5" fill="none" class="${reduce ? '' : 'draw'}"/>`);
-    edges.push({id, w: 0.3, c});
+    // red marks the path to a problem: the editor while folded, then the brand set and the broken account once open
+    const bad = 'var(--bad)', aBad = b.accounts.filter(a => a.issue), setBad = aBad.length > 0, edBad = !!b.editor_issue;
+    const redE = open.has(b.id) ? edBad : edBad || setBad, cE = redE ? bad : c, cB = setBad ? bad : c;
+    const why = [b.editor_issue && `Editor: ${b.editor_issue}`, ...aBad.map(a => `${(PF[a.platform] || [a.platform])[0]}: ${a.issue}`)].filter(Boolean);
+    lines.push(`<path id="${id}" d="M${CX},${CY} L${x},${y}" stroke="${cE}" stroke-opacity=".5" stroke-width="1.5" fill="none" class="${reduce ? '' : 'draw'}"/>`);
+    edges.push({id, w: 0.3, c: cE});
     const circ = 2 * Math.PI * 44, buf = Math.min(1, sched / 3);
     g += `<g class="node grow" tabindex="0" role="button" aria-label="Editor ${pad(i)}" onclick="toggle('${b.id}')" onkeydown="if(event.key==='Enter')toggle('${b.id}')"
-        onmousemove="tipShow(event,'<b>Editor ${pad(i)}</b><br>${sched} scheduled · ${rev} in review<br><span style=&quot;color:var(--muted)&quot;>Tap to ${open.has(b.id) ? 'fold' : 'open'}</span>')" onmouseleave="tipHide()" style="color:${c}">
-      <circle cx="${x}" cy="${y}" r="74" fill="url(#halo)" class="${b.enabled ? 'breathe' : ''}"/>
-      <circle cx="${x}" cy="${y}" r="38" fill="var(--node)" stroke="${c}" stroke-width="2" class="ring"/>
+        onmousemove="tipShow(event,'<b>Editor ${pad(i)}</b><br>${redE ? `<span style=&quot;color:var(--bad)&quot;>${esc(why.join(' · ')).slice(0, 120)}</span><br>` : ''}${sched} scheduled · ${rev} in review<br><span style=&quot;color:var(--muted)&quot;>Tap to ${open.has(b.id) ? 'fold' : 'open'}</span>')" onmouseleave="tipHide()" style="color:${cE}">
+      <circle cx="${x}" cy="${y}" r="74" fill="url(#halo)" class="${b.enabled ? 'breathe' : ''} ${redE ? 'alarm' : ''}"/>
+      <circle cx="${x}" cy="${y}" r="38" fill="var(--node)" stroke="${cE}" stroke-width="2" class="ring ${redE ? 'alarm-ring' : ''}"/>
       <circle cx="${x}" cy="${y}" r="45" fill="none" stroke="var(--line)" stroke-width="3"/>
-      <circle cx="${x}" cy="${y}" r="45" fill="none" stroke="${c}" stroke-width="3" stroke-linecap="round" stroke-dasharray="${circ * buf} ${circ}" transform="rotate(-90 ${x} ${y})"/>
+      <circle cx="${x}" cy="${y}" r="45" fill="none" stroke="${cE}" stroke-width="3" stroke-linecap="round" stroke-dasharray="${circ * buf} ${circ}" transform="rotate(-90 ${x} ${y})"/>
       <text class="lbl" x="${x}" y="${y - 2}" font-size="12">Editor</text><text class="lbl" x="${x}" y="${y + 16}" font-size="18">${pad(i)}</text>
       ${rev && !open.has(b.id) ? `<g onclick="event.stopPropagation();showSet('${b.id}','review')"><circle cx="${x + 32}" cy="${y - 32}" r="12" fill="var(--flag)"/><text x="${x + 32}" y="${y - 28}" text-anchor="middle" font-size="11" font-weight="700" fill="#111">${rev}</text></g>` : ''}
     </g>`;
     if (!open.has(b.id)) continue;
     // the editor's brand set
     const [bx, by] = pol(355, ang), S = 116, bid = `b${i}`;
-    lines.push(`<path id="${bid}" d="M${x},${y} L${bx},${by}" stroke="${c}" stroke-opacity=".6" stroke-width="2" fill="none" class="${reduce ? '' : 'draw'}"/>`);
-    edges.push({id: bid, w: 0.7, c});
+    lines.push(`<path id="${bid}" d="M${x},${y} L${bx},${by}" stroke="${cB}" stroke-opacity=".6" stroke-width="2" fill="none" class="${reduce ? '' : 'draw'}"/>`);
+    edges.push({id: bid, w: 0.7, c: cB});
     g += `<g class="node grow" tabindex="0" role="button" aria-label="Editor ${pad(i)} brand set" onclick="showSet('${b.id}')" onkeydown="if(event.key==='Enter')showSet('${b.id}')"
-        onmousemove="tipShow(event,'<b>Brand set</b> · Editor ${pad(i)}<br>Tap for stats and review')" onmouseleave="tipHide()" style="color:${c};animation-delay:.1s">
-      <rect x="${bx - S / 2 - 22}" y="${by - S / 2 - 22}" width="${S + 44}" height="${S + 44}" rx="40" fill="url(#halo)" class="breathe"/>
-      <rect x="${bx - S / 2}" y="${by - S / 2}" width="${S}" height="${S}" rx="18" fill="var(--node)" stroke="${c}" stroke-width="2" class="ring"/>
+        onmousemove="tipShow(event,'<b>Brand set</b> · Editor ${pad(i)}<br>${setBad ? `<span style=&quot;color:var(--bad)&quot;>${aBad.length} account${aBad.length > 1 ? 's' : ''} with a problem</span><br>` : ''}Tap for stats and review')" onmouseleave="tipHide()" style="color:${cB};animation-delay:.1s">
+      <rect x="${bx - S / 2 - 22}" y="${by - S / 2 - 22}" width="${S + 44}" height="${S + 44}" rx="40" fill="url(#halo)" class="breathe ${setBad ? 'alarm' : ''}"/>
+      <rect x="${bx - S / 2}" y="${by - S / 2}" width="${S}" height="${S}" rx="18" fill="var(--node)" stroke="${cB}" stroke-width="2" class="ring ${setBad ? 'alarm-ring' : ''}"/>
       <text class="sub" x="${bx}" y="${by - 22}" font-size="10" letter-spacing=".1em">BRAND SET</text>
       ${rev ? `<g onclick="event.stopPropagation();showSet('${b.id}','review')"><circle cx="${bx + S / 2 - 4}" cy="${by - S / 2 + 4}" r="13" fill="var(--flag)"/><text x="${bx + S / 2 - 4}" y="${by - S / 2 + 8}" text-anchor="middle" font-size="11" font-weight="700" fill="#111">${rev}</text></g>` : ''}
       <text class="lbl" x="${bx}" y="${by + 24}" font-size="26">${fmt(b.totals.views)}</text>
@@ -219,17 +228,17 @@ function draw() {
     b.accounts.forEach((a, k) => {
       const pang = ang + (k - (n - 1) / 2) * fan, [px, py] = pol(505, pang), p = PF[a.platform] || [a.platform, a.platform.slice(0, 2).toUpperCase(), null];
       const pid = `p${i}_${k}`, v = bsViews(b, a.platform), handle = (a.handle || '').replace(/^@/, '');
-      const href = a.connected && handle && p[2] ? p[2](handle) : null;
+      const href = a.connected && handle && p[2] ? p[2](handle) : null, cP = a.issue ? bad : c;
       if (a.connected) {
-        lines.push(`<path id="${pid}" d="M${bx},${by} Q${(bx + px) / 2 + (CX - bx) * 0.1},${(by + py) / 2 + (CY - by) * 0.1} ${px},${py}" stroke="${c}" stroke-opacity=".5" stroke-width="1.5" fill="none" class="${reduce ? '' : 'draw'}"/>`);
-        edges.push({id: pid, w: 0.35 + Math.min(1.6, v / 400), c});
+        lines.push(`<path id="${pid}" d="M${bx},${by} Q${(bx + px) / 2 + (CX - bx) * 0.1},${(by + py) / 2 + (CY - by) * 0.1} ${px},${py}" stroke="${cP}" stroke-opacity=".55" stroke-width="1.5" fill="none" class="${reduce ? '' : 'draw'}"/>`);
+        edges.push({id: pid, w: 0.35 + Math.min(1.6, v / 400), c: cP});
       } else lines.push(`<line x1="${bx}" y1="${by}" x2="${px}" y2="${py}" stroke="var(--ghost)" stroke-dasharray="3 6"/>`);
-      const tipTxt = a.connected ? `<b>${p[0]}</b> ${esc(a.handle || '')}<br>${fmt(a.followers)} followers · ${fmt(v)} views<br><span style=&quot;color:var(--muted)&quot;>Open profile ↗</span>` : `<b>${p[0]}</b><br>Not connected yet`;
+      const tipTxt = a.connected ? `<b>${p[0]}</b> ${esc(a.handle || '')}<br>${a.issue ? `<span style=&quot;color:var(--bad)&quot;>${esc(a.issue).slice(0, 120)}</span><br>` : ''}${fmt(a.followers)} followers · ${fmt(v)} views<br><span style=&quot;color:var(--muted)&quot;>Open profile ↗</span>` : `<b>${p[0]}</b><br>Not connected yet`;
       const go = href ? `window.open('${href}','_blank','noopener')` : '';
       g += `<g class="${a.connected ? 'node' : 'ghost'} grow" ${href ? `tabindex="0" role="link" aria-label="${p[0]} profile" onclick="${go}" onkeydown="if(event.key==='Enter')${go}"` : ''}
-          onmousemove="tipShow(event,'${tipTxt}')" onmouseleave="tipHide()" style="color:${c};animation-delay:${.2 + k * .07}s">
-        ${a.connected ? `<circle cx="${px}" cy="${py}" r="46" fill="url(#halo)"/>` : ''}
-        <circle cx="${px}" cy="${py}" r="27" fill="${a.connected ? 'var(--node)' : 'none'}" stroke="${a.connected ? c : 'var(--ghost)'}" stroke-width="${a.connected ? 2 : 1.5}" ${a.connected ? '' : 'stroke-dasharray="3 4"'} class="ring"/>
+          onmousemove="tipShow(event,'${tipTxt}')" onmouseleave="tipHide()" style="color:${cP};animation-delay:${.2 + k * .07}s">
+        ${a.connected ? `<circle cx="${px}" cy="${py}" r="46" fill="url(#halo)" class="${a.issue ? 'breathe alarm' : ''}"/>` : ''}
+        <circle cx="${px}" cy="${py}" r="27" fill="${a.connected ? 'var(--node)' : 'none'}" stroke="${a.connected ? cP : 'var(--ghost)'}" stroke-width="${a.connected ? 2 : 1.5}" ${a.connected ? '' : 'stroke-dasharray="3 4"'} class="ring ${a.issue ? 'alarm-ring' : ''}"/>
         <text class="lbl" x="${px}" y="${py + 5}" font-size="14" ${a.connected ? '' : 'style="fill:var(--muted)"'}>${p[1]}</text>
         ${a.connected ? `<text class="sub" x="${px}" y="${py + 45}" font-size="11">${fmt(v)} views</text>` : ''}
       </g>`;
@@ -315,7 +324,8 @@ function showSet(id, tab = 'overview') {
   const t = b.totals, c = b.counts, posts = D.posts.filter(p => p.brand_set === id && p.platforms.some(x => x.status !== 'removed')).slice(0, 8);
   const accts = b.accounts.filter(a => a.connected).map(a => { const p = PF[a.platform], h = (a.handle || '').replace(/^@/, '');
     return `<a href="${p[2](h)}" target="_blank" rel="noopener"><span class="h">${p[0]} ${esc(a.handle)}</span><span class="v">${fmt(a.followers)} followers ↗</span></a>`; }).join('');
-  sheet(head + `
+  const probs = [b.editor_issue && ['Editor', b.editor_issue], ...b.accounts.filter(a => a.issue).map(a => [`${PF[a.platform][0]} ${esc(a.handle || '')}`, a.issue])].filter(Boolean);
+  sheet(head + probs.map(([w, m]) => `<div class="issue"><b>${w}</b> · ${esc(m)}</div>`).join('') + `
     <div class="chips"><span class="chip">${esc(b.format)}</span><span class="chip">${esc(b.look.captions.replace(/ \d+px/, ''))}</span>${b.theme && !/not set/i.test(b.theme) ? `<span class="chip">${esc(b.theme)}</span>` : ''}</div>
     <div class="nums"><div><b>${fmt(t.views)}</b><span>views</span></div><div><b>${t.posts}</b><span>posted</span></div><div><b>${t.posts ? fmt(Math.round(t.views / t.posts)) : '–'}</b><span>per clip</span></div>
       <div><b>${c.queued + c.approved}</b><span>scheduled</span></div><div><b>${c.ready + c.qa_failed}</b><span>in review</span></div><div><b>${c.excluded}</b><span>filtered</span></div></div>

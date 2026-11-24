@@ -16,6 +16,46 @@ PLATFORMS = ['tiktok', 'instagram', 'youtube', 'facebook', 'x']
 STATUSES = ['posted', 'queued', 'approved', 'ready', 'decided', 'qa_failed', 'excluded', 'skipped', 'rejected', 'taken_down']
 
 
+HEALTH = {'at': 0, 'accounts': {}, 'error': None}
+
+
+def health_forever(every=300):
+    """Account health from the posting service every 5 minutes (kept in memory for the page)."""
+    import threading
+    def loop():
+        while True:
+            for be in {e['backend'] for e in fw.editors()}:
+                fn = getattr(fw.backend(be), 'account_health', None)
+                if fn:
+                    try:
+                        HEALTH['accounts'].update(fn()); HEALTH['error'] = None
+                    except Exception as ex:
+                        HEALTH['error'] = str(ex)
+            HEALTH['at'] = time.time()
+            time.sleep(every)
+    threading.Thread(target=loop, daemon=True).start()
+
+
+def account_issue(c, aid):
+    """Why this account isn't posting properly, or None."""
+    if aid in HEALTH['accounts'] and HEALTH['accounts'][aid]:
+        return HEALTH['accounts'][aid]
+    if HEALTH['at'] and not HEALTH['error'] and aid not in HEALTH['accounts']:
+        return 'not connected in Zernio any more'
+    last = c.execute("SELECT status, error FROM posts WHERE account=? AND status IN ('posted','failed') AND posted_at>? "
+                     "ORDER BY posted_at DESC LIMIT 1", (aid, time.time() - 2 * 86400)).fetchone()
+    if last and last['status'] == 'failed':
+        return f"last post failed: {(last['error'] or 'no reason given')[:160]}"
+    return None
+
+
+def editor_issue(eid, lines):
+    """An error in this editor's own pipeline (render, decide, scheduling) in the last 2 hours."""
+    cutoff = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time() - 7200))
+    errs = [l for l in lines if l[:19] >= cutoff and f'{eid} ERROR' in l]
+    return errs[-1][20:200] if errs else None
+
+
 def overview():
     c = fw.db()
     now = time.time()
@@ -29,6 +69,8 @@ def overview():
         followers.setdefault(r['account'], []).append((r['day'], r['followers']))
     week_ago = (dt.date.today() - dt.timedelta(days=7)).isoformat()
 
+    log_path = os.path.join(fw.WORK, 'logs', 'run.log')
+    all_lines = open(log_path).read().splitlines() if os.path.exists(log_path) else []
     sets = []
     for ed in fw.editors():
         bs = ed.get('brand_set', {})
@@ -40,7 +82,7 @@ def overview():
             now_f = hist[-1][1] if hist else None
             then_f = next((f for d, f in reversed(hist) if d <= week_ago), hist[0][1] if hist else None)
             if aid or pf in bs.get('planned_platforms', []) or pf in ed.get('platforms', []):
-                accts.append({'platform': pf, 'id': aid, 'connected': bool(aid), 'handle': ed.get('handles', {}).get(pf),
+                accts.append({'platform': pf, 'id': aid, 'connected': bool(aid), 'issue': account_issue(c, aid) if aid else None, 'handle': ed.get('handles', {}).get(pf),
                               'followers': now_f, 'growth_7d': (now_f - then_f) if now_f is not None and then_f is not None else None})
         counts = {s: 0 for s in STATUSES}
         for r in c.execute('SELECT status, COUNT(*) n FROM edits WHERE editor=? GROUP BY status', (ed['id'],)):
@@ -57,7 +99,8 @@ def overview():
             'look': {'captions': f"{style.get('caption_font')} {style.get('caption_size')}px",
                      'hook': f"{style.get('hook_font')} {style.get('hook_size')}px, {style.get('hook_color')} on {style.get('hook_bg')}"},
             'accounts': accts, 'counts': counts, 'totals': {k: t[k] or 0 for k in t.keys()},
-            'next_post': {'slot': nxt['slot'], 'hook': nxt['hook']} if nxt else None})
+            'next_post': {'slot': nxt['slot'], 'hook': nxt['hook']} if nxt else None,
+            'editor_issue': editor_issue(ed['id'], all_lines[-400:])})
 
     posts = {}
     for r in c.execute("SELECT p.*, e.hook, s.views, s.likes, s.comments, s.shares, s.saves, s.taken_at FROM posts p "
@@ -77,9 +120,9 @@ def overview():
         "COUNT(DISTINCT p.edit_id) posts FROM posts p LEFT JOIN post_stats s ON s.post_id=p.id "
         "WHERE p.status='posted' AND p.posted_at>? GROUP BY day, p.editor ORDER BY day", (now - 30 * 86400,))]
 
-    lines = [l for l in open(log_path).read().splitlines() if re.match(r'^\d{4}-\d\d-\d\d ', l)][-25:] if os.path.exists(log_path) else []
+    lines = [l for l in all_lines if re.match(r'^\d{4}-\d\d-\d\d ', l)][-25:]
     stats_at = c.execute('SELECT MAX(taken_at) FROM post_stats').fetchone()[0]
-    return {'generated': now, 'last_run': beat, 'stats_at': stats_at, 'brand_sets': sets,
+    return {'generated': now, 'last_run': beat, 'health_at': HEALTH['at'], 'health_error': HEALTH['error'], 'stats_at': stats_at, 'brand_sets': sets,
             'posts': list(posts.values())[:50], 'review': review, 'daily': daily, 'log': lines[::-1]}
 
 
@@ -214,6 +257,7 @@ if __name__ == '__main__':
         if not url:
             sys.exit(f'no dashboard_url / dashboard_ingest_token in {SECRETS}')
         print(f'syncing the editing pipeline to {url} every minute')
+        health_forever()
         while True:
             try:
                 sync_once()
@@ -221,6 +265,7 @@ if __name__ == '__main__':
                 print(f'{time.strftime("%H:%M:%S")} sync failed: {ex}', flush=True)
             time.sleep(60)
     print(f'AI editor dashboard on http://127.0.0.1:{PORT}')
+    health_forever()
     if url:
         print(f'syncing to {url} every minute')
         sync_forever()

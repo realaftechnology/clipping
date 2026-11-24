@@ -136,3 +136,29 @@ def account_info():
                     'followers': a.get('followersCount'), 'active': a.get('isActive'),
                     'profile': prof.get('_id') if isinstance(prof, dict) else prof})
     return out
+
+
+def account_health():
+    """{account_id: problem text or None} for every connected account. A problem means posting is at risk:
+    can't post, token invalid, needs reconnecting, restricted/banned, or Zernio marks it 'error'.
+    Analytics-only warnings are not problems."""
+    _, j = _call('GET', '/accounts/health')
+    out = {}
+    for a in j.get('accounts', []):
+        why = []
+        if a.get('needsReconnect'):
+            why.append('needs reconnecting in Zernio')
+        if a.get('tokenValid') is False:
+            why.append('login token expired')
+        if a.get('canPost') is False:
+            why.append("can't post")
+        if a.get('publishingRestriction'):
+            why.append(f"publishing restricted: {a['publishingRestriction']}")
+        if a.get('disconnectReason'):
+            why.append(f"disconnected: {a['disconnectReason']}")
+        if a.get('status') == 'error' or why:
+            iss = [i.get('message', i) if isinstance(i, dict) else i for i in a.get('issues') or []]
+            out[a['accountId']] = '; '.join(why + [str(i) for i in iss]) or 'account error in Zernio'
+        else:
+            out[a['accountId']] = None
+    return out
