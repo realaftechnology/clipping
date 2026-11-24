@@ -17,7 +17,7 @@ How cuts stay smooth:
 - Where a cut removes more than ~0.6 s, the framing switches between normal and a 7% punch-in around the speaker, so
   the jump reads as a deliberate camera change; small pause trims keep the same framing so it doesn't flicker.
 """
-import json, subprocess, sys
+import json, os, statistics, subprocess, sys, tempfile
 import numpy as np
 
 src, words_p, plan_p, out = sys.argv[1:5]
@@ -153,8 +153,34 @@ for k in range(1, len(new_t)):  # keep times in order
 json.dump({'transcription': new_t}, open(f'{out}/words.json', 'w'))
 
 # cut: per segment trim + fades. Landscape clips stay landscape (render_clip.sh crops to the speaker) unless an insert
-# (a video Andy reacts to, a graphic) is kept: then the output is assembled vertically here, the speaker cropped as usual
-# and each insert shown whole, full width over a blurred fill, so the viewer sees what he's reacting to.
+# (another camera on a guest, a video Andy reacts to) is kept: then the output is assembled vertically here.
+# Matt, 2026-11-24: "It needs to be consistent all around. The way it starts is the way it has to be throughout the clip.
+# If it's going to show the entire frame, have it show the entire frame throughout the entire clip. If it's going to crop
+# it, then crop the entire video. Don't switch back and forth." So every shot gets the same 9:16 crop, each centred on
+# its own subject: the speaker crop for the main camera; for an insert, the face on screen in that shot, or the middle
+# of the frame when several people share it (the "cruise the internet" layout has the played video in the middle).
+FACES = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'bin', 'faces')
+
+
+def insert_x(x0, x1, W, H, cw):
+    """Left edge of a 9:16 crop for the insert shown between x0 and x1 seconds."""
+    centre = (W - cw) / 2
+    with tempfile.TemporaryDirectory() as t:
+        subprocess.run(['ffmpeg', '-v', 'error', '-ss', str(x0), '-to', str(x1), '-i', src, '-vf', 'fps=2,scale=640:-2', '-q:v', '5',
+                        f'{t}/f%04d.jpg'], check=True, stdin=subprocess.DEVNULL)
+        try:
+            frames = json.loads(subprocess.run([FACES, t], capture_output=True, text=True, check=True).stdout)
+        except Exception:
+            return int(centre) // 2 * 2
+    fs = sorted(f['x'] + f['w'] / 2 for fr in frames for f in fr['faces'] if f['c'] > 0.5 and f['h'] > 0.08)
+    if not fs:
+        return int(centre) // 2 * 2
+    if fs[-1] - fs[0] > 0.2:  # more than one person/panel on screen: keep the middle
+        return int(centre) // 2 * 2
+    cx = statistics.median(fs) * W
+    return int(min(max(cx - cw / 2, 0), W - cw)) // 2 * 2
+
+
 probe = json.loads(subprocess.run(['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height',
                                    '-of', 'json', src], capture_output=True, text=True, check=True).stdout)['streams'][0]
 W, H = probe['width'], probe['height']
@@ -169,15 +195,17 @@ for s_, e_ in final:
         if b_ - a_ > 0.04:
             pieces.append((a_, b_, any(x['start'] <= (a_ + b_) / 2 <= x['end'] for x in inserts)))
 vertical = landscape and any(p_[2] for p_ in pieces)
-parts, zoomed, prev_end = [], False, None
+parts, zoomed, prev_end, ins_x = [], False, None, {}
 for k, (s, e, ins) in enumerate(pieces):
     v = f'[0:v]trim={s}:{e},setpts=PTS-STARTPTS'
     if prev_end is not None and s - prev_end >= 0.6:  # switch framing only where a real chunk was cut
         zoomed = not zoomed
     prev_end = e
     if vertical and ins:
-        v += (f',split[f{k}][g{k}];[g{k}]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=24:2,eq=brightness=-0.12[bg{k}];'
-              f'[f{k}]scale=1080:-2:flags=lanczos[fg{k}];[bg{k}][fg{k}]overlay=0:560')
+        xi = next(i_ for i_, x in enumerate(inserts) if x['start'] <= (s + e) / 2 <= x['end'])
+        if xi not in ins_x:
+            ins_x[xi] = insert_x(inserts[xi]['start'], inserts[xi]['end'], W, H, crop[1])
+        v += f',crop={crop[1] // 2 * 2}:{H // 2 * 2}:{ins_x[xi]}:0,scale=1080:1920:flags=lanczos'
     elif vertical:
         cw_ = crop[1] / (Z if zoomed else 1)
         ch_ = H / (Z if zoomed else 1)

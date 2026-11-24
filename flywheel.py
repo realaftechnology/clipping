@@ -383,7 +383,7 @@ Also:
   On-screen inserts in this clip: {inserts_text(row)}
   Matt, after a clip went out with the video Andy reacted to cut: "you can't remove context like that." If any line you
   keep refers to or reacts to an insert ("play this", "look at that", laughing at it), keep the insert's words too: it is
-  shown full width in the finished clip. Only cut an insert when nothing you keep depends on it. If the clip can't work
+  shown in the finished clip, cropped to fill the frame like every other shot. Only cut an insert when nothing you keep depends on it. If the clip can't work
   without context it doesn't have, set usable=false. summary: what you cut, in a few words. If it's already tight:
   start 0 (or the first sentence start), end = last sentence end, remove []."""
 
@@ -1279,7 +1279,7 @@ On-screen inserts: {inserts_text(row)}
 
 Rules (Matt): never start mid-sentence or cut a sentence off; cut only filler, repeats, false starts and asides when
 what's left is one natural, continuous thought; never remove context the clip depends on (keep any insert that kept
-lines react to; it's shown full width). Return trim: start (a sentence start), end (a sentence end), remove ranges with
+lines react to; it fills the frame like every other shot). Return trim: start (a sentence start), end (a sentence end), remove ranges with
 why, summary."""
     return ask_claude(prompt, schema)['trim']
 
