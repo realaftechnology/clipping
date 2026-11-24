@@ -120,6 +120,14 @@ body { margin: 0; background: radial-gradient(ellipse at 54% 50%, var(--bg-2), v
 .whyf textarea { width: 100%; font: inherit; font-size: 13px; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg-2); color: var(--text); resize: vertical; }
 .whyf .btns button.no { background: var(--bad); border-color: var(--bad); color: #fff; }
 .pbox .whyf .btns button { flex: 1; }
+.drop { margin-top: 18px; border: 1px solid var(--line); border-radius: 12px; padding: 0 12px; }
+.drop summary { cursor: pointer; padding: 11px 0; font-weight: 600; display: flex; align-items: center; gap: 8px; list-style: none; }
+.drop summary::-webkit-details-marker { display: none; }
+.drop summary::after { content: "▾"; margin-left: auto; color: var(--muted); transition: transform .2s; }
+.drop[open] summary::after { transform: rotate(180deg); }
+.drop .plist div.p:last-child { border-bottom: 0; }
+.sched { cursor: pointer; }
+.sched:hover .h { color: var(--text); text-decoration: underline; }
 .done { font-size: 12px; color: var(--text-2); margin-top: 8px; }
 @media (max-width: 720px) {
   .stats { gap: 14px; } .stat b { font-size: 16px; } .brand .t { display: none; }
@@ -325,6 +333,16 @@ function nextClip(doneId) {
   next ? openPlayer(next.edit_id) : closePlayer();
   load();
 }
+// watch a scheduled clip (no decision buttons)
+let schedOpen = false;
+function openClip(id) {
+  const x = D.brand_sets.flatMap(b => b.scheduled || []).find(c => c.edit_id === id); if (!x) return;
+  document.getElementById('pbox').innerHTML = `<button class="x" onclick="closePlayer()" aria-label="Close">×</button>
+    <div class="sub" style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em">${x.slot ? 'Posts ' + when(x.slot) : 'Posts at the next free slot'}</div>
+    <div class="hk">${esc(x.hook)}</div>
+    ${x.has_video ? `<video src="/video/${id}" controls autoplay playsinline></video>` : '<div class="why">Video file not found</div>'}`;
+  document.getElementById('player').classList.add('open');
+}
 function closePlayer() { const p = document.getElementById('player'), v = p.querySelector('video'); v && v.pause(); p.classList.remove('open'); document.getElementById('pbox').innerHTML = ''; }
 async function decide(id, action, btn) {
   btn.parentElement.querySelectorAll('button').forEach(b => b.disabled = true);
@@ -353,6 +371,11 @@ function showSet(id, tab = 'overview') {
       return `<div class="sec">Learning · last ${L.days || 14} days</div><div class="nums" style="margin-top:6px">
         <div><b>${pct(L.held, L.made)}</b><span>needed review</span></div><div><b>${pct(L.approved, L.approved + L.rejected)}</b><span>approved in review</span></div><div><b>${L.rules ?? 0}</b><span>rules learned</span></div></div>`; })()}
     ${b.next_post ? `<div class="sec">Next · ${when(b.next_post.slot)}</div><div style="margin-top:6px">${esc(b.next_post.hook)}</div>` : ''}
+    ${(() => { const S = b.scheduled || [];
+      return `<details class="drop" ${schedOpen ? 'open' : ''} ontoggle="schedOpen=this.open"><summary>Scheduled <span class="chip">${S.length}</span></summary>
+        <div class="plist">${S.map(x => `<div class="p sched" role="button" tabindex="0" onclick="openClip(${x.edit_id})" onkeydown="if(event.key==='Enter')openClip(${x.edit_id})">
+          <span class="h">${x.has_video ? '▶ ' : ''}${esc(x.hook)}</span><span class="v">${x.slot ? when(x.slot) : 'next free slot'}${x.platforms.length ? ' · ' + x.platforms.map(p => (PF[p] || [p, p])[1]).join(' ') : ''}</span></div>`).join('')
+          || '<div class="p"><span class="h" style="color:var(--text-2)">Nothing scheduled</span></div>'}</div></details>`; })()}
     <div class="sec">Accounts</div><div class="plist">${accts || '<div class="p">None connected</div>'}</div>
     <div class="sec">Recent</div><div class="plist">${posts.map(p => { const v = p.platforms.reduce((a, x) => a + (x.views || 0), 0), u = (p.platforms.find(x => x.url) || {}).url;
       return u ? `<a href="${esc(u)}" target="_blank" rel="noopener"><span class="h">${esc(p.hook)}</span><span class="v">${fmt(v)}</span></a>` : `<div class="p"><span class="h">${esc(p.hook)}</span><span class="v">${fmt(v)}</span></div>`; }).join('') || '<div class="p">Nothing yet</div>'}</div>`, () => showSet(id, 'overview'));

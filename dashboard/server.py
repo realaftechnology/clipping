@@ -56,6 +56,18 @@ def editor_issue(eid, lines):
     return errs[-1][20:200] if errs else None
 
 
+def scheduled(c, eid):
+    """Clips lined up to post: queued with a time, then approved ones waiting for the next free slot."""
+    out = []
+    for r in c.execute("SELECT e.id, e.hook, e.path, MIN(p.slot) slot, GROUP_CONCAT(p.platform) pfs FROM posts p JOIN edits e ON e.id=p.edit_id "
+                       "WHERE p.editor=? AND p.status='queued' GROUP BY e.id ORDER BY slot", (eid,)):
+        out.append({'edit_id': r['id'], 'hook': r['hook'], 'slot': r['slot'], 'platforms': (r['pfs'] or '').split(','),
+                    'has_video': bool(r['path'] and os.path.exists(r['path']))})
+    for r in c.execute("SELECT id, hook, path FROM edits WHERE editor=? AND status='approved' ORDER BY updated", (eid,)):
+        out.append({'edit_id': r['id'], 'hook': r['hook'], 'slot': None, 'platforms': [], 'has_video': bool(r['path'] and os.path.exists(r['path']))})
+    return out
+
+
 def learning(c, eid, days=14):
     """Is the editor getting more precise? Share of finished clips that needed a human, and how many of those were approved."""
     since = time.time() - days * 86400
@@ -113,7 +125,8 @@ def overview():
             'accounts': accts, 'counts': counts, 'totals': {k: t[k] or 0 for k in t.keys()},
             'next_post': {'slot': nxt['slot'], 'hook': nxt['hook']} if nxt else None,
             'editor_issue': editor_issue(ed['id'], all_lines[-400:]),
-            'learning': learning(c, ed['id'])})
+            'learning': learning(c, ed['id']),
+            'scheduled': scheduled(c, ed['id'])})
 
     posts = {}
     for r in c.execute("SELECT p.*, e.hook, s.views, s.likes, s.comments, s.shares, s.saves, s.taken_at FROM posts p "
