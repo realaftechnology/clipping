@@ -1,0 +1,15 @@
+{
+  "_note": "Shared defaults. Machine-specific paths (Google Drive folders) go in config.local.json, which is not committed and overrides these keys.",
+  "source_root": "~/Library/CloudStorage/GoogleDrive-<account>/My Drive/REAL AF/Real AF UGC/Andy Frisella Podcast Clips",
+  "source_folders": [
+    "CTI",
+    "QAF",
+    "RealTalk",
+    "75Hard"
+  ],
+  "work_dir": "~/Movies/AI Editors",
+  "whisper_model": "~/Library/Application Support/Transcribe Drop/models/ggml-small.en.bin",
+  "music_dir": "~/Library/CloudStorage/GoogleDrive-<account>/My Drive/<music folder>",
+  "topical_max_age_days": 14,
+  "decide_model": null
+}

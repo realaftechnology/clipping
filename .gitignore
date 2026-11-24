@@ -1,0 +1,13 @@
+# machine-specific paths and secrets
+config.local.json
+*.secret*
+# not shared: commercial music list, compiled binary, old scheduler file with local paths
+music/catalog.csv
+bin/faces
+launchd/
+# generated
+__pycache__/
+*.pyc
+*.mp4
+dashboard/data/
+.DS_Store

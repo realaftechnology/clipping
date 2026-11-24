@@ -1,0 +1,24 @@
+{
+  "_note": "Approved fonts (Matt, 2026-11-23). Values are the local() names Chrome resolves; all four are installed on this Mac. 'TikTok Classic' is Proxima Nova Semibold, TikTok's long-standing in-app text font, used for native-looking hooks.",
+  "Bebas Neue": [
+    "Bebas Neue Bold",
+    "BebasNeue-Bold",
+    "Bebas Neue Regular"
+  ],
+  "Advercase": [
+    "Advercase Bold",
+    "Advercase-Bold"
+  ],
+  "Proxima Nova Black": [
+    "Proxima Nova Black",
+    "ProximaNova-Black"
+  ],
+  "Acumin Pro ExtraCondensed": [
+    "Acumin Pro ExtraCondensed Black",
+    "AcuminPro-ExtraCondensedBlack"
+  ],
+  "TikTok Classic": [
+    "Proxima Nova Semibold",
+    "ProximaNova-Semibold"
+  ]
+}

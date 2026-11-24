@@ -1,0 +1,13 @@
+{
+  "_note": "Editor 01 look. Spec and reasons: Context/AI Editors - Output Spec.md. Fonts must come from ../../fonts.json.",
+  "caption_font": "Proxima Nova Black",
+  "caption_size": 64,
+  "caption_y": 1250,
+  "caption_active": "none",
+  "hook_font": "TikTok Classic",
+  "hook_size": 64,
+  "hook_top": 220,
+  "hook_bg": "#000000",
+  "hook_color": "#FFFFFF",
+  "caption_animate": false
+}

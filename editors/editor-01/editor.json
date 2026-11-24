@@ -1,0 +1,40 @@
+{
+  "_note": "Editor 01 operating settings. Look: style.json. Recipe: Context/AI Editors - Output Spec.md. accounts = Zernio account _id per platform (python3 flywheel.py accounts). Platforms with no id are skipped. brand_set = the one branded account set this editor runs across every platform (Matt, 2026-11-23).",
+  "name": "AIEditor01",
+  "brand_set": {
+    "name": "Share the Standard",
+    "zernio_profile": "6b04b6971c392c00f93e2e47",
+    "theme": "Not set yet (pulls from all four clip folders)",
+    "format": "9:16 vertical",
+    "planned_platforms": [
+      "youtube",
+      "facebook",
+      "x"
+    ]
+  },
+  "enabled": true,
+  "backend": "zernio",
+  "platforms": [
+    "tiktok",
+    "instagram"
+  ],
+  "accounts": {
+    "tiktok": "6b04b7b74e565e3b285cfddb",
+    "instagram": "6b04ba00712c960ca4dba403"
+  },
+  "slots": [
+    "08:00",
+    "11:00",
+    "14:00",
+    "17:00",
+    "20:00"
+  ],
+  "buffer": 3,
+  "auto_post": true,
+  "review_dir": "",
+  "handles": {
+    "tiktok": "@sharethestandard",
+    "instagram": "@sharethestandard"
+  },
+  "max_review": 10
+}
