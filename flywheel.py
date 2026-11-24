@@ -65,6 +65,8 @@ def db():
     CREATE TABLE IF NOT EXISTS account_stats(
       account TEXT, platform TEXT, username TEXT, day TEXT, followers INTEGER, taken_at REAL, PRIMARY KEY(account, day));
     ''')
+    if 'attempts' not in [r[1] for r in c.execute('PRAGMA table_info(posts)')]:
+        c.execute('ALTER TABLE posts ADD COLUMN attempts INTEGER DEFAULT 0')
     if 'editor' not in [r[1] for r in c.execute('PRAGMA table_info(rules)')]:
         c.execute('ALTER TABLE rules ADD COLUMN editor TEXT')  # NULL = every editor; set only for stylistic rules
     return c
@@ -1165,6 +1167,16 @@ def post():
         try:
             res = backend(rows[0]['backend']).publish(rows[0]['path'], caption, targets, {'title': rows[0]['hook'], 'idempotency': f'edit-{eid}'})
         except Exception as ex:
+            # nothing went out (or the same idempotency key stops a double post): keep it scheduled and retry next
+            # check, up to 6 tries (about half an hour), unless the error is permanent
+            temporary = type(ex).__name__ == 'Temporary'
+            tries = (rows[0]['attempts'] or 0) + 1
+            if temporary and tries < 6:
+                for p in rows:
+                    c.execute('UPDATE posts SET attempts=?, error=? WHERE id=?', (tries, str(ex)[:300], p['id']))
+                c.commit()
+                log(f"{rows[0]['editor']} post edit {eid} hit a temporary error (try {tries} of 6), will retry: {str(ex)[:160]}")
+                continue
             res = {t['platform']: {'status': 'failed', 'error': str(ex)} for t in targets}
         for p in rows:
             r = res.get(p['platform'], {})
@@ -1417,6 +1429,26 @@ def run():
         except Exception as ex:
             log(f'learn ERROR {ex}\n{traceback.format_exc()}')
     json.dump({'started': started, 'finished': time.time()}, open(beat, 'w'))
+    post_on_time(1800)
+
+
+def post_on_time(window):
+    """Stay up until the next pass would start and send each post at its scheduled minute (retries included),
+    instead of up to 30 minutes late. Holds the run lock, so nothing else runs meanwhile."""
+    end = time.time() + window - 60
+    while True:
+        c = db()
+        nxt = c.execute("SELECT MIN(slot) FROM posts WHERE status='queued'").fetchone()[0]
+        retry = c.execute("SELECT 1 FROM posts WHERE status='queued' AND slot<=? AND attempts>0", (time.time(),)).fetchone()
+        when = time.time() + 300 if retry else nxt  # retries every 5 minutes
+        if not when or when > end:
+            return
+        time.sleep(max(0, when - time.time()))
+        try:
+            post()
+            reconcile()
+        except Exception as ex:
+            log(f'post ERROR {ex}\n{traceback.format_exc()}')
 
 
 def status():

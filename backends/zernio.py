@@ -19,16 +19,32 @@ def _key():
         raise RuntimeError(f'Zernio API key missing: put {{"zernio_api_key": "sk_..."}} in {SECRETS}')
 
 
-def _call(method, path, body=None, query=None, headers=None):
+class Temporary(RuntimeError):
+    """Zernio or the network had a blip (429, 5xx, timeout): safe to try again later."""
+
+
+def _call(method, path, body=None, query=None, headers=None, tries=4):
+    import time
     url = BASE + path + ('?' + urllib.parse.urlencode(query) if query else '')
     h = {'Authorization': f'Bearer {_key()}', 'Content-Type': 'application/json', **(headers or {})}
-    req = urllib.request.Request(url, method=method, headers=h, data=json.dumps(body).encode() if body is not None else None)
-    try:
-        with urllib.request.urlopen(req, timeout=120) as r:
-            return r.status, json.loads(r.read() or b'{}')
-    except urllib.error.HTTPError as e:
-        detail = e.read().decode(errors='replace')[:400]
-        raise RuntimeError(f'Zernio {method} {path} -> HTTP {e.code}: {detail}') from None
+    for k in range(tries):
+        req = urllib.request.Request(url, method=method, headers=h, data=json.dumps(body).encode() if body is not None else None)
+        try:
+            with urllib.request.urlopen(req, timeout=120) as r:
+                return r.status, json.loads(r.read() or b'{}')
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode(errors='replace')[:400]
+            if e.code == 429 or e.code >= 500:
+                if k < tries - 1:
+                    time.sleep(3 * (k + 1) ** 2)  # 3 s, 12 s, 27 s
+                    continue
+                raise Temporary(f'Zernio {method} {path} -> HTTP {e.code}: {detail}') from None
+            raise RuntimeError(f'Zernio {method} {path} -> HTTP {e.code}: {detail}') from None
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
+            if k < tries - 1:
+                time.sleep(3 * (k + 1) ** 2)
+                continue
+            raise Temporary(f'Zernio {method} {path} -> {e}') from None
 
 
 
