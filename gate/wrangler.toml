@@ -12,4 +12,4 @@ HUB_HOST = "hub.railway.internal"
 
 [[vpc_services]]
 binding = "HUB"
-service_id = "REPLACE_WITH_VPC_SERVICE_ID"
+service_id = "01a20e75-3e34-7d93-85e0-f3b5964190ec"
