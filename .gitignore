@@ -11,3 +11,4 @@ __pycache__/
 *.mp4
 dashboard/data/
 .DS_Store
+bin/cloud

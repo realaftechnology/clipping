@@ -67,6 +67,8 @@ def db():
     ''')
     if 'attempts' not in [r[1] for r in c.execute('PRAGMA table_info(posts)')]:
         c.execute('ALTER TABLE posts ADD COLUMN attempts INTEGER DEFAULT 0')
+    if 'archived_at' not in [r[1] for r in c.execute('PRAGMA table_info(edits)')]:
+        c.execute('ALTER TABLE edits ADD COLUMN archived_at REAL')
     if 'editor' not in [r[1] for r in c.execute('PRAGMA table_info(rules)')]:
         c.execute('ALTER TABLE rules ADD COLUMN editor TEXT')  # NULL = every editor; set only for stylistic rules
     return c
@@ -149,12 +151,20 @@ def local_copy(row):
         if os.path.getsize(tmp) != want:
             raise IOError(f"incomplete download of {os.path.basename(row['path'])}: {os.path.getsize(tmp)} of {want} bytes")
         os.replace(tmp, dst)
+        try:
+            cloud('evict', row['path'])  # the Drive app keeps its own downloaded copy: hand it back to the cloud
+        except Exception:
+            pass
     return dst
 
 
-def clean_cache(days=2):
+def clean_cache(days=None):
+    """Raw clip copies go as soon as no edit is waiting to be rendered from them (they come back from Drive on demand)."""
+    c = db()
+    busy = {r[0] for r in c.execute("SELECT raw_id FROM edits WHERE status='decided'")}
     for p in glob.glob(os.path.join(WORK, 'cache', '*')):
-        if time.time() - os.path.getmtime(p) > days * 86400:
+        rid = os.path.basename(p).split('.')[0]
+        if time.time() - os.path.getmtime(p) > 3600 and not (rid.isdigit() and int(rid) in busy):
             os.remove(p)
 
 
@@ -1240,6 +1250,76 @@ def check_cmd(ids):
             hold_for_review(i, 'Context check: ' + '; '.join(r['problems']) + (f" | Fix: {r['fix']}" if r['fix'] else ''))
 
 
+# ---------- offload to cloud storage (Matt, 2026-11-24) ----------
+# "We need to offload as much local files as humanly possible... we need to have a protocol for moving files to cloud
+# storage as soon as they are posted."
+# Finished clips move to Google Drive (AI Editors Archive/<editor>/<Posted|Rejected|Replaced>/<YYYY-MM>/) the moment
+# they're done with; once Drive confirms the upload, the local copy is freed (the file stays in Drive, online-only).
+# Only clips still waiting to post or waiting for review stay on the Mac. Working files are deleted after each render.
+ARCHIVE_FOLDER = {'posted': 'Posted', 'rejected': 'Rejected', 'taken_down': 'Rejected', 'superseded': 'Replaced'}
+
+
+def cloud(cmd, path):
+    tool = os.path.join(HERE, 'bin', 'cloud')
+    if not os.path.exists(tool):
+        subprocess.run(['swiftc', '-O', os.path.join(HERE, 'bin', 'cloud.swift'), '-o', tool], check=True, capture_output=True)
+    return subprocess.run([tool, cmd, path], capture_output=True, text=True).stdout.strip()
+
+
+def offload():
+    root = os.path.expanduser(CFG.get('archive_root', ''))
+    if not root:
+        return
+    c, freed, moved = db(), 0, 0
+    for e in c.execute("SELECT * FROM edits WHERE archived_at IS NULL AND path IS NOT NULL AND status IN ('posted','rejected','taken_down','superseded')").fetchall():
+        local = e['path']
+        if local.startswith(root):          # already in Drive: just make sure the local copy is freed
+            if cloud('status', local) == 'uploaded':
+                cloud('evict', local)
+                c.execute('UPDATE edits SET archived_at=? WHERE id=?', (time.time(), e['id']))
+            continue
+        if not os.path.exists(local):
+            c.execute('UPDATE edits SET archived_at=? WHERE id=?', (time.time(), e['id']))
+            continue
+        month = dt.datetime.fromtimestamp(e['updated'] or time.time()).strftime('%Y-%m')
+        dst = os.path.join(root, e['editor'], ARCHIVE_FOLDER[e['status']], month, os.path.basename(local))
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        if not os.path.exists(dst) or os.path.getsize(dst) != os.path.getsize(local):
+            shutil.copyfile(local, dst)
+        if cloud('status', dst) != 'uploaded':
+            continue                        # still uploading: finish on the next pass
+        size = os.path.getsize(local)
+        cloud('evict', dst)
+        os.remove(local)
+        c.execute('UPDATE edits SET path=?, archived_at=? WHERE id=?', (dst, time.time(), e['id']))
+        freed += size
+        moved += 1
+    c.commit()
+    # working files: rebuilt on demand, so they go as soon as a render is done with them
+    for d in glob.glob(os.path.join(WORK, 'render', '*')) + glob.glob(os.path.join(WORK, 'check', '*')):
+        if time.time() - os.path.getmtime(d) > 3600:
+            freed += sum(os.lstat(os.path.join(r, f)).st_size for r, _, fs in os.walk(d) for f in fs if os.path.lexists(os.path.join(r, f)))
+            shutil.rmtree(d, ignore_errors=True)
+    for f in glob.glob(os.path.join(WORK, 'trim', '*', 'source.mov')):
+        eid = int(os.path.basename(os.path.dirname(f)))
+        st = c.execute('SELECT status FROM edits WHERE id=?', (eid,)).fetchone()
+        if not st or st[0] != 'decided':     # rendered (or gone): the tightened source isn't needed any more
+            freed += os.path.getsize(f)
+            os.remove(f)
+    # Drive files the pipeline read (raw clips, High Performers) stay downloaded inside the Drive app: free them
+    for base in [os.path.join(os.path.expanduser(CFG['source_root']), f) for f in CFG['source_folders']] + [os.path.expanduser(CFG.get('references_root', ''))]:
+        for r_, _, fs in os.walk(base) if base and os.path.isdir(base) else []:
+            for fn in fs:
+                fp = os.path.join(r_, fn)
+                # skip Drive's own ~4 MB preview pieces (it won't free those); real downloads are whole clips
+                if fn.lower().endswith(('.mp4', '.mov')) and os.stat(fp).st_blocks * 512 > 8e6 and cloud('status', fp) == 'uploaded':
+                    freed += os.stat(fp).st_blocks * 512
+                    cloud('evict', fp)
+    if moved or freed > 50e6:
+        free = shutil.disk_usage(WORK).free / 1e9
+        log(f'offload: {moved} clips moved to Drive, {freed / 1e9:.2f} GB freed locally ({free:.0f} GB free on disk)')
+
+
 # ---------- queue / post / track ----------
 def backend(name):
     sys.path.insert(0, HERE)
@@ -1601,7 +1681,7 @@ def run():
                 c.commit()
         except Exception as ex:
             log(f"{ed['id']} ERROR {ex}\n{traceback.format_exc()}")
-    for step in (queue, post, reconcile, track, stats, clean_cache):
+    for step in (queue, post, reconcile, track, stats, clean_cache, offload):
         try:
             step()
         except Exception as ex:
@@ -1630,6 +1710,7 @@ def post_on_time(window):
         try:
             post()
             reconcile()
+            offload()   # a clip that just posted goes to Drive straight away
         except Exception as ex:
             log(f'post ERROR {ex}\n{traceback.format_exc()}')
 
@@ -1650,7 +1731,7 @@ def status():
 
 if __name__ == '__main__':
     a = sys.argv[1:] or ['']
-    cmds = {'takedown': lambda: takedown(a[1], ' '.join(a[2:])), 'removed': lambda: removed(a[1]), 'scan': scan, 'status': status, 'accounts': accounts, 'reconcile': reconcile, 'queue': queue, 'post': post, 'track': track, 'stats': stats, 'run': run, 'triage': lambda: triage(int(a[1])), 'check': lambda: check_cmd([int(x) for x in a[1:]]), 'learn': lambda: learn(int(a[1]), a[2]), 'profile': update_profile, 'learn-performance': lambda: learn_performance('--force' in a), 'refs': lambda: refs_cmd(a[1] if len(a) > 1 else None),
+    cmds = {'takedown': lambda: takedown(a[1], ' '.join(a[2:])), 'removed': lambda: removed(a[1]), 'scan': scan, 'status': status, 'accounts': accounts, 'reconcile': reconcile, 'queue': queue, 'post': post, 'track': track, 'stats': stats, 'run': run, 'triage': lambda: triage(int(a[1])), 'offload': offload, 'check': lambda: check_cmd([int(x) for x in a[1:]]), 'learn': lambda: learn(int(a[1]), a[2]), 'profile': update_profile, 'learn-performance': lambda: learn_performance('--force' in a), 'refs': lambda: refs_cmd(a[1] if len(a) > 1 else None),
             'prep': lambda: prep(a[1]), 'render': lambda: render(int(a[1])),
             'approve': lambda: review(int(a[1]), 'approve', ' '.join(a[2:])), 'reject': lambda: review(int(a[1]), 'reject', ' '.join(a[2:])),
             'decide': lambda: decide(int(a[1]), a[2], a[a.index('--manual') + 1] if '--manual' in a else None)}
