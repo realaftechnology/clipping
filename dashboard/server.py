@@ -121,6 +121,11 @@ def overview():
 
     log_path = os.path.join(fw.WORK, 'logs', 'run.log')
     all_lines = open(log_path).read().splitlines() if os.path.exists(log_path) else []
+    # which editor is mid-job: a pass is running (started, not finished, under 45 min old) and its latest log line names it
+    busy = None
+    if beat.get('started') and not beat.get('finished') and now - beat['started'] < 2700:
+        ids = [e['id'] for e in fw.editors()]
+        busy = next((i for l in reversed(all_lines[-60:]) for i in ids if f' {i} ' in f' {l} '), None)
     sets = []
     for ed in fw.editors():
         bs = ed.get('brand_set', {})
@@ -152,6 +157,7 @@ def overview():
             'next_post': {'slot': nxt['slot'], 'hook': nxt['hook']} if nxt else None,
             'editor_issue': editor_issue(ed['id'], all_lines[-400:]),
             'learning': learning(c, ed['id']),
+            'working': busy == ed['id'],
             'scheduled': scheduled(c, ed['id']),
             'lessons': lessons(ed['id'])})
 
