@@ -10,7 +10,8 @@ the clip for distribution on the various platforms."
   sourcing.py run                           source the newest unsourced episode (the loop calls this; one per run)
   sourcing.py episode <drive id|file> [--title "Ep 1076 QAF"]   source one episode now
   sourcing.py held                          clips waiting for a human to approve them
-  sourcing.py approve <clip id> [note] | reject <clip id> <why>   release a clip to the editors, or reject it (the reason teaches the agent)
+  sourcing.py approve <clip id> [note] | reject <clip id> <why>   hand a clip to the editors, or reject it (the reason teaches the agent)
+  sourcing.py learn                         rewrite the sourcing profile from every review (runs after each review on its own)
 
 Flow: download (one episode at a time; deleted afterwards) -> transcribe with word timings (whisper-cli) -> pick moments
 (headless Claude, judged against the hard exclusions, content profile, performance playbook and high performers) ->
@@ -194,6 +195,69 @@ def sourcing_lessons(n=40):
     return '\n'.join(out) or '(no decisions on sourced moments yet)'
 
 
+# ---------- the sourcing profile: what Matt approves and rejects, rewritten after every review ----------
+PROFILE = os.path.join(fw.HERE, '..', 'Context', 'AI Editors - Sourcing Profile.md')  # private project notes, not the public repo
+PROFILE_SCHEMA = {'type': 'object', 'additionalProperties': False, 'required': ['profile', 'changed'],
+                  'properties': {'profile': {'type': 'string'}, 'changed': {'type': 'string'}}}
+
+
+def sourcing_profile():
+    return open(PROFILE).read() if os.path.exists(PROFILE) else '(empty: no review decisions yet)'
+
+
+def update_profile():
+    """Rewrite the sourcing profile from every review of the agent's moments. Matt, 2026-11-23: "When I approve a clip,
+    I want the sourcing agent to take note of the fact that I approve that clip. And if I reject it, I want it to ask me
+    why I rejected it so it can learn what to source moving forward.\""""
+    c = db()
+    rows = c.execute("SELECT s.*, e.title FROM sourced s JOIN episodes e ON e.id=s.episode_id WHERE s.status IN ('approved','rejected') "
+                     "ORDER BY s.reviewed").fetchall()
+    if not rows:
+        return
+    later = {r['name']: f"editors {r['status']}: {r['reason'] or r['note'] or ''}" for r in c.execute(
+        "SELECT s.name, e.status, e.note, f.reason FROM sourced s JOIN raw_clips rc ON rc.path=s.path JOIN edits e ON e.raw_id=rc.id "
+        "LEFT JOIN feedback f ON f.edit_id=e.id WHERE e.status IN ('excluded','skipped','rejected','approved','posted')")}
+    dec = '\n'.join(f"- {r['status'].upper()} | {r['title']} | {r['name']} ({r['duration']:.0f} s) | Matt's reason: {r['review_note'] or '(none)'}"
+                    f" | agent's pitch: {r['why']} | flags: {r['risk_flags']} | later: {later.get(r['name'], '-')}"
+                    f" | transcript: \"{(r['transcript'] or '')[:700]}\"" for r in rows[-150:])
+    out = fw.ask_claude(f"""You keep the SOURCING PROFILE for the Real AF sourcing agent, which goes through full podcast episodes
+(Andy Frisella) and pulls 1-3 minute raw moments for AI editors to repurpose. Matt reviews every moment; the profile tells
+the agent what he approves and what he rejects, so over time almost every moment it pulls gets approved.
+
+{MATT_BRIEF}
+
+Rewrite the profile from ALL review decisions below. Be specific and practical: name the kinds of moments, deliveries,
+structures and subjects (e.g. "Q&A answers that leave out the listener's question: rejected, the moment loses its context"),
+not broad categories. Treat Matt's typed reasons as the strongest evidence; infer from approvals carefully. Note how many
+decisions back each line, e.g. (3 rejected). Where something is borderline in Matt's own words, say so. Don't invent
+preferences. The Output Spec's hard exclusions always apply and are not repeated here. Keep everything under
+"## Matt's own rules" exactly as written. Markdown, under about 450 words, these sections:
+## Source more of
+## Don't source
+## Borderline: pull only when it's strong
+## Matt's own rules
+
+Current profile:
+{sourcing_profile()}
+
+Review decisions, oldest first:
+{dec}""", PROFILE_SCHEMA, timeout=600)
+    body = out['profile'].strip()
+    if body.startswith('# '):
+        body = body.split('\n', 1)[-1].lstrip()
+    head = ("# AI Editors: Sourcing Profile\n\nWhat Matt approves and rejects from the sourcing agent, rewritten automatically after "
+            f"each review (last {dt.datetime.now():%Y-%m-%d %H:%M}). The agent reads it before every episode. Edit freely; text under "
+            "\"Matt's own rules\" is kept as is.\n\n")
+    open(PROFILE, 'w').write(head + body + '\n')
+    fw.log(f"sourcing profile updated: {out['changed'][:300]}")
+
+
+def learn():
+    lock = open(os.path.join(WORK, '.sourcing-profile.lock'), 'w')
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    update_profile()
+
+
 MATT_BRIEF = """Matt, 2026-11-23: "these are meant to be segmented moments that could be turned into a variety of different
 things. So these aren't just 30-second clips from the show. They are meant to be raw moments that can be repurposed. So
 your job is essentially to take out anything of no substance. The clips should realistically be between 1 minute to 3
@@ -248,7 +312,11 @@ Performance playbook (what made past clips win, from every editor's posts and Ma
 Matt's highest-performing short clips (views in brackets), for what kind of material wins once cut down:
 {high_performers()}
 
-What happened to your earlier moments (learn from rejections):
+Sourcing profile: what Matt approves and rejects from YOUR earlier moments, rewritten after every review. Follow it closely;
+his reasons are the most direct guidance you have.
+{sourcing_profile()}
+
+Your most recent reviewed moments, with Matt's reasons:
 {sourcing_lessons()}
 
 Fields: subject = 1-3 words in CamelCase naming the moment (Natalie's style: GetSerious, SnapBenefits, GTAVI). why = what
@@ -525,13 +593,16 @@ def review(clip_id, action, note=''):
             os.remove(r['path'])
         c.execute("UPDATE sourced SET status='rejected', review_note=?, reviewed=? WHERE id=?", (note, time.time(), clip_id))
     c.commit()
+    # learn in the background so the dashboard isn't kept waiting
+    subprocess.Popen([sys.executable, os.path.abspath(__file__), 'learn'], cwd=fw.HERE, start_new_session=True, stdin=subprocess.DEVNULL,
+                     stdout=open(os.path.join(os.path.dirname(fw.LOG), 'triage.out'), 'a'), stderr=subprocess.STDOUT)
     fw.log(f"sourced clip {clip_id} {r['name']} -> " + (f"approved, handed to the editors in {os.path.relpath(dest, root())}" if action == 'approve' else 'rejected')
            + (f': {note}' if note else ''))
 
 
 if __name__ == '__main__':
     a = sys.argv[1:] or ['']
-    cmds = {'episodes': episodes_cmd, 'run': run, 'held': held,
+    cmds = {'episodes': episodes_cmd, 'run': run, 'held': held, 'learn': learn,
             'episode': lambda: source(a[1], a[a.index('--title') + 1] if '--title' in a else None, '--repick' in a),
             'approve': lambda: review(int(a[1]), 'approve', ' '.join(a[2:])),
             'reject': lambda: review(int(a[1]), 'reject', ' '.join(a[2:]))}
