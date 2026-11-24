@@ -1,5 +1,5 @@
 {
-  "_note": "Editor 01 operating settings. Look: style.json. Recipe: Context/AI Editors - Output Spec.md. accounts = Zernio account _id per platform (python3 flywheel.py accounts). Platforms with no id are skipped. brand_set = the one branded account set this editor runs across every platform (Matt, 2026-11-23).",
+  "_note": "Editor 01 operating settings. Look: style.json. Recipe: Context/AI Editors - Output Spec.md. accounts = Zernio account _id per platform (python3 flywheel.py accounts). Platforms with no id are skipped. brand_set = the one branded account set this editor runs across every platform (Matt, 2026-11-23). slots = the most posts a day; how many get used each day comes from fresh clip supply (config.json episode_days, fresh_days).",
   "name": "AIEditor01",
   "brand_set": {
     "name": "Share the Standard",
@@ -29,7 +29,6 @@
     "17:00",
     "20:00"
   ],
-  "buffer": 3,
   "auto_post": true,
   "review_dir": "",
   "handles": {

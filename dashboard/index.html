@@ -338,7 +338,7 @@ let schedOpen = false;
 function openClip(id) {
   const x = D.brand_sets.flatMap(b => b.scheduled || []).find(c => c.edit_id === id); if (!x) return;
   document.getElementById('pbox').innerHTML = `<button class="x" onclick="closePlayer()" aria-label="Close">×</button>
-    <div class="sub" style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em">${x.slot ? 'Posts ' + when(x.slot) : 'Posts at the next free slot'}</div>
+    <div class="sub" style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em">${x.slot ? 'Posts ' + when(x.slot) : 'In line: posts on the next open day'}</div>
     <div class="hk">${esc(x.hook)}</div>
     ${x.has_video ? `<video src="/video/${id}" controls autoplay playsinline></video>` : '<div class="why">Video file not found</div>'}`;
   document.getElementById('player').classList.add('open');
@@ -374,7 +374,7 @@ function showSet(id, tab = 'overview') {
     ${(() => { const S = b.scheduled || [];
       return `<details class="drop" ${schedOpen ? 'open' : ''} ontoggle="schedOpen=this.open"><summary>Scheduled <span class="chip">${S.length}</span></summary>
         <div class="plist">${S.map(x => `<div class="p sched" role="button" tabindex="0" onclick="openClip(${x.edit_id})" onkeydown="if(event.key==='Enter')openClip(${x.edit_id})">
-          <span class="h">${x.has_video ? '▶ ' : ''}${esc(x.hook)}</span><span class="v">${x.slot ? when(x.slot) : 'next free slot'}${x.platforms.length ? ' · ' + x.platforms.map(p => (PF[p] || [p, p])[1]).join(' ') : ''}</span></div>`).join('')
+          <span class="h">${x.has_video ? '▶ ' : ''}${esc(x.hook)}</span><span class="v">${x.slot ? when(x.slot) : 'in line'}${x.platforms.length ? ' · ' + x.platforms.map(p => (PF[p] || [p, p])[1]).join(' ') : ''}</span></div>`).join('')
           || '<div class="p"><span class="h" style="color:var(--text-2)">Nothing scheduled</span></div>'}</div></details>`; })()}
     <div class="sec">Accounts</div><div class="plist">${accts || '<div class="p">None connected</div>'}</div>
     <div class="sec">Recent</div><div class="plist">${posts.map(p => { const v = p.platforms.reduce((a, x) => a + (x.views || 0), 0), u = (p.platforms.find(x => x.url) || {}).url;

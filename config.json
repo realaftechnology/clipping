@@ -11,5 +11,12 @@
   "whisper_model": "~/Library/Application Support/Transcribe Drop/models/ggml-small.en.bin",
   "music_dir": "~/Library/CloudStorage/GoogleDrive-<account>/My Drive/<music folder>",
   "topical_max_age_days": 14,
-  "decide_model": null
+  "decide_model": null,
+  "episode_days": [
+    "Mon",
+    "Tue",
+    "Fri"
+  ],
+  "fresh_days": 7,
+  "evergreen_reserve": 3
 }

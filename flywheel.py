@@ -272,7 +272,8 @@ Standing rules learned from review (follow every one):
 Review decisions so far (Matt and Natalie):
 {review_lessons(ed['id'])}
 
-Raw clip: {os.path.basename(row['path'])} (folder {row['folder']}, {prep_row['duration']:.0f} s)
+Raw clip: {os.path.basename(row['path'])} (folder {row['folder']}, {prep_row['duration']:.0f} s, added {(time.time() - row['mtime']) / 86400:.0f} days ago)
+{'' if is_fresh(row['mtime']) else "This is an ARCHIVE clip, used only because there's nothing fresh to post. It must be evergreen: always true, not tied to any news, event, season, date or period. If it depends on any time period at all, set topical=true."}
 Transcript (auto, may lack punctuation):
 {q3}{prep_row['transcript']}{q3}
 
@@ -686,37 +687,89 @@ def backend(name):
     return importlib.import_module(f'backends.{name}')
 
 
-def next_slots(ed, taken, n):
-    """Next n free posting times from the editor's daily slot list (local time)."""
-    out, day, now = [], dt.date.today(), time.time()
-    while len(out) < n:
-        for hm in ed['slots']:
-            h, m = map(int, hm.split(':'))
-            t = dt.datetime.combine(day, dt.time(h, m)).timestamp()
-            if t > now + 300 and t not in taken and t not in out:
-                out.append(t)
-                if len(out) == n:
-                    break
-        day += dt.timedelta(days=1)
-    return out
+# ---------- cadence (Matt, 2026-11-23) ----------
+# At least one post a day on every account. Volume above one a day only when there are enough fresh clips to last
+# until the next expected episode (Mon, Tue, Fri). A day with no fresh clip gets one evergreen clip from the archive,
+# a different one for each editor.
+DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
 
 
-def queue():
+def is_fresh(mtime):
+    return mtime > time.time() - CFG.get('fresh_days', 7) * 86400
+
+
+def days_to_next_episode(day):
+    """Days from `day` (counted) up to the next expected episode day (not counted). Mon->1 (Tue), Tue->3 (Fri), Fri->3 (Mon)."""
+    eps = {DAYS.index(d) for d in CFG.get('episode_days', ['Mon', 'Tue', 'Fri'])}
+    n, d = 1, day + dt.timedelta(days=1)
+    while d.weekday() not in eps and n < 7:
+        n, d = n + 1, d + dt.timedelta(days=1)
+    return n
+
+
+def spread(slots, q):
+    """q of the editor's daily slots, evenly spread: 1 -> mid-day, 2 -> late morning and late afternoon, 5 -> all."""
+    s = sorted(slots)
+    return [s[int((i + 0.5) * len(s) / q)] for i in range(q)]
+
+
+def at(day, hm):
+    h, m = map(int, hm.split(':'))
+    return dt.datetime.combine(day, dt.time(h, m)).timestamp()
+
+
+def fresh_supply(c, eid):
+    """Fresh clips this editor can still post: approved and unposted, plus fresh raw clips it hasn't edited yet."""
+    ready = c.execute("SELECT COUNT(*) FROM edits e JOIN raw_clips r ON r.id=e.raw_id WHERE e.editor=? AND e.status='approved' AND r.mtime>?",
+                      (eid, time.time() - CFG.get('fresh_days', 7) * 86400)).fetchone()[0]
+    todo = c.execute("SELECT COUNT(*) FROM raw_clips r WHERE r.mtime>? AND r.id NOT IN (SELECT raw_id FROM blocked) "
+                     "AND NOT EXISTS (SELECT 1 FROM edits e WHERE e.raw_id=r.id AND e.editor=?)",
+                     (time.time() - CFG.get('fresh_days', 7) * 86400, eid)).fetchone()[0]
+    return ready + todo
+
+
+def daily_quota(c, ed, day, posted_today_fresh):
+    days = days_to_next_episode(day)
+    total = posted_today_fresh + fresh_supply(c, ed['id'])
+    return max(1, min(len(ed['slots']), -(-total // days)))  # ceil: stretch fresh clips to the next episode
+
+
+def queue(now=None):
+    """Plan today's posts for every editor: fresh clips by quota, else one evergreen clip so no day is empty."""
     c = db()
+    now = now or time.time()
+    today = dt.date.fromtimestamp(now)
+    t0, t1 = at(today, '00:00'), at(today + dt.timedelta(days=1), '00:00')
     for ed in editors():
         pfs = [pf for pf in ed.get('platforms', []) if ed['backend'] == 'dryrun' or ed.get('accounts', {}).get(pf)]
-        if not pfs:
-            continue  # no connected accounts yet: approved edits wait
-        edits = c.execute("SELECT id FROM edits WHERE editor=? AND status='approved' ORDER BY id", (ed['id'],)).fetchall()
-        if not edits:
+        if not pfs or not ed.get('slots'):
             continue
-        taken = {r[0] for r in c.execute("SELECT DISTINCT slot FROM posts WHERE editor=? AND status IN ('queued','posted')", (ed['id'],))}
-        for e, slot in zip(edits, next_slots(ed, taken, len(edits))):
+        todays = c.execute("SELECT DISTINCT p.edit_id, p.slot, r.mtime FROM posts p JOIN edits e ON e.id=p.edit_id JOIN raw_clips r ON r.id=e.raw_id "
+                           "WHERE p.editor=? AND p.slot>=? AND p.slot<? AND p.status IN ('queued','posted','publishing')", (ed['id'], t0, t1)).fetchall()
+        quota = daily_quota(c, ed, today, sum(1 for r in todays if r['mtime'] and is_fresh(r['mtime'])))
+        approved = c.execute("SELECT e.id, r.mtime FROM edits e JOIN raw_clips r ON r.id=e.raw_id WHERE e.editor=? AND e.status='approved' "
+                             "ORDER BY r.mtime DESC, e.id", (ed['id'],)).fetchall()
+        fresh = [e['id'] for e in approved if is_fresh(e['mtime'])]
+        evergreen = [e['id'] for e in approved if not is_fresh(e['mtime'])]
+        taken = {r['slot'] for r in todays}
+        open_slots = [t for t in (at(today, hm) for hm in spread(ed['slots'], quota)) if t > now + 300 and t not in taken]
+        planned = []
+        need = quota - len(todays)
+        for t in open_slots:
+            if need <= 0 or not fresh:
+                break
+            planned.append((fresh.pop(0), t))
+            need -= 1
+        if not todays and not planned and evergreen:  # nothing fresh today: one evergreen clip keeps the day covered
+            later = [t for t in (at(today, hm) for hm in sorted(ed['slots'])) if t > now + 300 and t not in taken]
+            planned.append((evergreen.pop(0), (open_slots or later or [now + 600])[0]))
+        for eid, slot in planned:
             for pf in pfs:
                 c.execute('INSERT INTO posts(edit_id,editor,platform,account,slot,backend,status) VALUES(?,?,?,?,?,?,?)',
-                          (e['id'], ed['id'], pf, ed.get('accounts', {}).get(pf, ''), slot, ed['backend'], 'queued'))
-            c.execute("UPDATE edits SET status='queued', updated=? WHERE id=?", (time.time(), e['id']))
-            log(f"{ed['id']} queue edit {e['id']} for {dt.datetime.fromtimestamp(slot):%a %d %b %H:%M} on {', '.join(pfs)}")
+                          (eid, ed['id'], pf, ed.get('accounts', {}).get(pf, ''), slot, ed['backend'], 'queued'))
+            c.execute("UPDATE edits SET status='queued', updated=? WHERE id=?", (time.time(), eid))
+            kind = 'evergreen' if eid not in [e['id'] for e in approved if is_fresh(e['mtime'])] else 'fresh'
+            log(f"{ed['id']} queue edit {eid} ({kind}; {quota}/day until next episode) for {dt.datetime.fromtimestamp(slot):%a %d %b %H:%M} on {', '.join(pfs)}")
     c.commit()
 
 
@@ -891,10 +944,18 @@ def stats():
 
 
 # ---------- the unattended pass ----------
-def next_raw(c, eid):
-    return c.execute("SELECT r.id FROM raw_clips r WHERE NOT EXISTS (SELECT 1 FROM edits e WHERE e.raw_id=r.id AND e.editor=?) "
-                     "AND r.id NOT IN (SELECT raw_id FROM blocked) "
-                     "ORDER BY (r.origin='new') DESC, r.mtime DESC LIMIT 1", (eid,)).fetchone()
+def next_fresh(c, eid):
+    """Newest fresh raw clip this editor hasn't edited."""
+    return c.execute("SELECT r.id FROM raw_clips r WHERE r.mtime>? AND r.id NOT IN (SELECT raw_id FROM blocked) "
+                     "AND NOT EXISTS (SELECT 1 FROM edits e WHERE e.raw_id=r.id AND e.editor=?) ORDER BY r.mtime DESC LIMIT 1",
+                     (time.time() - CFG.get('fresh_days', 7) * 86400, eid)).fetchone()
+
+
+def next_evergreen(c):
+    """Archive clip no editor has used yet, newest first, so each editor's evergreen days use different clips."""
+    return c.execute("SELECT r.id FROM raw_clips r WHERE r.mtime<=? AND r.id NOT IN (SELECT raw_id FROM blocked) "
+                     "AND NOT EXISTS (SELECT 1 FROM edits e WHERE e.raw_id=r.id) ORDER BY r.mtime DESC LIMIT 1",
+                     (time.time() - CFG.get('fresh_days', 7) * 86400,)).fetchone()
 
 
 def run():
@@ -915,12 +976,13 @@ def run():
             for e in c.execute("SELECT id FROM edits WHERE editor=? AND status='decided'", (ed['id'],)).fetchall():
                 render(e['id'])
             tries = 0
-            # keep `buffer` safe clips lined up; stop making new ones while the review queue is full
+            # every fresh clip gets edited; archive clips only to keep a small evergreen reserve for days with nothing fresh
             count = lambda sts: c.execute(f"SELECT COUNT(*) FROM edits WHERE editor=? AND status IN ({sts})", (ed['id'],)).fetchone()[0]
-            while (tries < 4 and count("'approved','queued'") < ed.get('buffer', 3)
-                   and count("'ready'") < ed.get('max_review', 10)):
+            reserve = lambda: c.execute("SELECT COUNT(*) FROM edits e JOIN raw_clips r ON r.id=e.raw_id WHERE e.editor=? AND e.status='approved' "
+                                        "AND r.mtime<=?", (ed['id'], time.time() - CFG.get('fresh_days', 7) * 86400)).fetchone()[0]
+            while tries < 4 and count("'ready'") < ed.get('max_review', 10):
                 tries += 1
-                r = next_raw(c, ed['id'])
+                r = next_fresh(c, ed['id']) or (next_evergreen(c) if reserve() < CFG.get('evergreen_reserve', 3) else None)
                 if not r:
                     break
                 eid = decide(r['id'], ed['id'])
