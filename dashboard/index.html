@@ -337,6 +337,9 @@ function showSet(id, tab = 'overview') {
     <div class="chips"><span class="chip">${esc(b.format)}</span><span class="chip">${esc(b.look.captions.replace(/ \d+px/, ''))}</span>${b.theme && !/not set/i.test(b.theme) ? `<span class="chip">${esc(b.theme)}</span>` : ''}</div>
     <div class="nums"><div><b>${fmt(t.views)}</b><span>views</span></div><div><b>${t.posts}</b><span>posted</span></div><div><b>${t.posts ? fmt(Math.round(t.views / t.posts)) : '–'}</b><span>per clip</span></div>
       <div><b>${c.queued + c.approved}</b><span>scheduled</span></div><div><b>${c.ready + c.qa_failed}</b><span>in review</span></div><div><b>${c.excluded}</b><span>filtered</span></div></div>
+    ${(() => { const L = b.learning || {}, pct = (x, y) => y ? Math.round(100 * x / y) + '%' : '–';
+      return `<div class="sec">Learning · last ${L.days || 14} days</div><div class="nums" style="margin-top:6px">
+        <div><b>${pct(L.held, L.made)}</b><span>needed review</span></div><div><b>${pct(L.approved, L.approved + L.rejected)}</b><span>approved in review</span></div><div><b>${L.rules ?? 0}</b><span>rules learned</span></div></div>`; })()}
     ${b.next_post ? `<div class="sec">Next · ${when(b.next_post.slot)}</div><div style="margin-top:6px">${esc(b.next_post.hook)}</div>` : ''}
     <div class="sec">Accounts</div><div class="plist">${accts || '<div class="p">None connected</div>'}</div>
     <div class="sec">Recent</div><div class="plist">${posts.map(p => { const v = p.platforms.reduce((a, x) => a + (x.views || 0), 0), u = (p.platforms.find(x => x.url) || {}).url;

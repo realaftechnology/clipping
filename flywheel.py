@@ -29,7 +29,7 @@ NAME = re.compile(r'^(\d+(?:\.\d+)?)_(?:([A-Za-z0-9]+?)_)?(.+)\.(mp4|mov)$', re.
 
 def db():
     os.makedirs(WORK, exist_ok=True)
-    c = sqlite3.connect(DB)
+    c = sqlite3.connect(DB, timeout=30)
     c.row_factory = sqlite3.Row
     c.executescript('''
     CREATE TABLE IF NOT EXISTS raw_clips(
@@ -51,12 +51,16 @@ def db():
       shares INTEGER, saves INTEGER, avg_watch REAL, follows INTEGER, raw TEXT);
     CREATE TABLE IF NOT EXISTS feedback(
       id INTEGER PRIMARY KEY, edit_id INTEGER REFERENCES edits(id), editor TEXT, action TEXT, reason TEXT, at REAL);
+    CREATE TABLE IF NOT EXISTS rules(
+      id INTEGER PRIMARY KEY, kind TEXT, rule TEXT, reason TEXT, source_edit INTEGER, at REAL, active INTEGER DEFAULT 1);
     CREATE TABLE IF NOT EXISTS post_stats(
       post_id INTEGER PRIMARY KEY REFERENCES posts(id), taken_at REAL, views INTEGER, likes INTEGER, comments INTEGER,
       shares INTEGER, saves INTEGER, raw TEXT);
     CREATE TABLE IF NOT EXISTS account_stats(
       account TEXT, platform TEXT, username TEXT, day TEXT, followers INTEGER, taken_at REAL, PRIMARY KEY(account, day));
     ''')
+    if 'editor' not in [r[1] for r in c.execute('PRAGMA table_info(rules)')]:
+        c.execute('ALTER TABLE rules ADD COLUMN editor TEXT')  # NULL = every editor; set only for stylistic rules
     return c
 
 
@@ -222,7 +226,7 @@ def music_start(fname):
 DECISION_SCHEMA = {
     'type': 'object', 'additionalProperties': False,
     'required': ['excluded', 'exclusion_reason', 'usable', 'skip_reason', 'topical', 'opening_raises_question', 'hook', 'alt_hooks', 'mood', 'song',
-                 'post_caption', 'hashtags', 'risk_flags'],
+                 'post_caption', 'hashtags', 'risk_flags', 'caption_fixes', 'profile_verdict', 'profile_basis'],
     'properties': {
         'excluded': {'type': 'boolean', 'description': 'hits a hard exclusion; checked before anything else'},
         'exclusion_reason': {'type': 'string'},
@@ -233,7 +237,13 @@ DECISION_SCHEMA = {
         'mood': {'type': 'string', 'enum': ['reflective', 'epic', 'hype', 'dark', 'warm']},
         'song': {'type': 'string', 'description': 'exact file name from the list'},
         'post_caption': {'type': 'string'}, 'hashtags': {'type': 'array', 'items': {'type': 'string'}},
-        'risk_flags': {'type': 'array', 'items': {'type': 'string'}}}}
+        'risk_flags': {'type': 'array', 'items': {'type': 'string'}},
+        'profile_verdict': {'type': 'string', 'enum': ['approve', 'reject', 'unclear'],
+                            'description': 'what the content profile says Matt would do with this clip'},
+        'profile_basis': {'type': 'string'},
+        'caption_fixes': {'type': 'array', 'description': 'corrections to the on-screen caption words',
+                          'items': {'type': 'object', 'additionalProperties': False, 'required': ['index', 'text'],
+                                    'properties': {'index': {'type': 'integer'}, 'text': {'type': 'string'}}}}}}
 
 
 def decide_prompt(row, prep_row, ed, pool):
@@ -253,6 +263,12 @@ Natalie (human editor) cut this raw clip. Decide the text hook, the music bed an
 This editor's playbook (lessons from past posts):
 {playbook}
 
+Content profile: what Matt approves and rejects, learned from every review decision. Applies to every editor.
+{content_profile()}
+
+Standing rules learned from review (follow every one):
+{standing_rules(ed['id'])}
+
 Review decisions so far (Matt and Natalie):
 {review_lessons(ed['id'])}
 
@@ -266,14 +282,20 @@ Songs you may use (instrumentals; pick one whose mood fits; file name must match
 Also:
 - usable=false only if the clip is unusable (cut mid-thought with no payoff, mostly crosstalk, unclear audio); say why in skip_reason.
 - topical=true if it depends on a news event or date that will go stale.
+- profile_verdict: judge the clip against the content profile. "approve" only if it clearly matches what Matt has
+  approved before; "reject" if it clearly matches what he rejects; otherwise "unclear". profile_basis: the profile line
+  you relied on. With "approve", leave risk_flags empty for anything the profile already settles.
 - risk_flags: subject matter Natalie should see first (politics, a named private person, medical or legal claims, likely out-of-context reading). Swearing is never a risk flag on its own; only flag what the clip is about or how it could be read. Empty list if none.
 - post_caption: one or two plain sentences that extend the hook's question without answering it; no emoji. hashtags: 3 to 5, lowercase, no '#'.
-- alt_hooks: 2 more hooks that follow the rules."""
+- alt_hooks: 2 more hooks that follow the rules.
+- caption_fixes: the on-screen captions are these words (index:word): {caption_tokens(row['id'])}
+  Fix only clear transcription mistakes (a misheard or misspelled word, a wrong name) and anything the standing rules
+  require: [{{index, text}}], text "" removes the word. Never change how Andy actually talks. [] if nothing needs fixing."""
 
 
-def ask_claude(prompt):
+def ask_claude(prompt, schema=None):
     cmd = ['claude', '-p', prompt, '--output-format', 'json', '--tools', '', '--no-session-persistence',
-           '--setting-sources', '', '--json-schema', json.dumps(DECISION_SCHEMA)]
+           '--setting-sources', '', '--json-schema', json.dumps(schema or DECISION_SCHEMA)]
     if CFG.get('decide_model'):
         cmd += ['--model', CFG['decide_model']]
     r = subprocess.run(cmd, capture_output=True, text=True, cwd=WORK, timeout=300)
@@ -300,6 +322,8 @@ def decide(raw_id, eid, manual=None):
     else:
         d = json.load(open(manual)) if manual else ask_claude(decide_prompt(row, prep_row, ed, pool))
     d.setdefault('excluded', False)
+    if d.get('caption_fixes') and d.get('usable') and not d['excluded']:
+        fix_captions(raw_id, d['caption_fixes'])
     if d['excluded']:
         d['usable'] = False
         c.execute('INSERT OR REPLACE INTO blocked VALUES(?,?,?)', (raw_id, 'excluded: ' + d.get('exclusion_reason', ''), time.time()))
@@ -319,10 +343,14 @@ def decide(raw_id, eid, manual=None):
         status, note = 'excluded', d.get('exclusion_reason', '')
     elif not d['usable']:
         status, note = 'skipped', d['skip_reason']
+    elif d.get('profile_verdict') == 'reject':
+        status, note = 'skipped', f"content profile: Matt rejects clips like this ({d.get('profile_basis', '')})"
     elif d['topical'] and age_days > CFG.get('topical_max_age_days', 14):
         status, note = 'skipped', f'topical clip, {age_days:.0f} days old'
-    elif d['risk_flags'] or not d['opening_raises_question']:
-        note = '; '.join(d['risk_flags'] + ([] if d['opening_raises_question'] else ['opening does not raise a question']))
+    elif d['risk_flags'] or (not d['opening_raises_question'] and d.get('profile_verdict') != 'approve'):
+        # once the content profile says Matt approves clips like this, a non-question opening no longer holds it
+        note = '; '.join(d['risk_flags'] + ([] if d['opening_raises_question'] or d.get('profile_verdict') == 'approve'
+                                            else ['opening does not raise a question']))
     v = (c.execute('SELECT MAX(version) FROM edits WHERE raw_id=? AND editor=?', (raw_id, eid)).fetchone()[0] or 0) + 1
     cur = c.execute('INSERT INTO edits(raw_id,editor,version,status,decision,hook,song,music_start,note,created,updated) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
                     (raw_id, eid, v, status, json.dumps(d), d['hook'], d['song'] if d['usable'] else None,
@@ -363,7 +391,7 @@ def render(edit_id):
                    check=True, capture_output=True)
     q = qa(out, pr['duration'])
     d = json.loads(e['decision'])
-    safe = not d['risk_flags'] and d['opening_raises_question'] and not d['topical'] and not e['note']
+    safe = not d['risk_flags'] and (d['opening_raises_question'] or d.get('profile_verdict') == 'approve') and not d['topical'] and not e['note']
     # Matt, 2026-11-23: "Automated posts should be safest stuff." Anything flagged waits for a human, even with auto_post on.
     status = 'qa_failed' if q['problems'] else ('approved' if ed.get('auto_post') and safe else 'ready')
     c.execute('UPDATE edits SET status=?, path=?, qa=?, updated=? WHERE id=?', (status, out, json.dumps(q), time.time(), edit_id))
@@ -389,6 +417,11 @@ def review(edit_id, action, reason=''):
         c.execute('INSERT INTO feedback(edit_id,editor,action,reason,at) VALUES(?,?,?,?,?)', (edit_id, e['editor'], action, reason.strip(), time.time()))
     c.commit()
     log(f"edit {edit_id} -> {status}" + (f': {reason.strip()}' if reason.strip() else ''))
+    # learn in the background so the dashboard isn't kept waiting: triage a rejection, then refresh the content profile
+    os.makedirs(os.path.dirname(LOG), exist_ok=True)
+    if action == 'reject' or e['note']:
+        subprocess.Popen([sys.executable, os.path.abspath(__file__), 'learn', str(edit_id), action], cwd=HERE, start_new_session=True,
+                         stdin=subprocess.DEVNULL, stdout=open(os.path.join(os.path.dirname(LOG), 'triage.out'), 'a'), stderr=subprocess.STDOUT)
 
 
 def review_lessons(eid, n=25):
@@ -397,7 +430,7 @@ def review_lessons(eid, n=25):
     rows = c.execute("SELECT f.*, e.hook, e.note, p.transcript FROM feedback f JOIN edits e ON e.id=f.edit_id "
                      "LEFT JOIN preps p ON p.raw_id=e.raw_id ORDER BY f.at DESC LIMIT ?", (n * 2,)).fetchall()
     rej = [r for r in rows if r['action'] == 'reject'][:n]
-    ok = [r for r in rows if r['action'] == 'approve'][:10]
+    ok = [r for r in rows if r['action'] == 'approve' and not (r['note'] or '').startswith('Re-edited')][:10]
     tag = lambda r: '' if r['editor'] == eid else f" ({r['editor']})"
     out = []
     if rej:
@@ -415,6 +448,236 @@ def set_status(edit_id, status):
     c.execute('UPDATE edits SET status=?, updated=? WHERE id=?', (status, time.time(), edit_id))
     c.commit()
     log(f'edit {edit_id} -> {status}')
+
+
+# ---------- learning from a rejection ----------
+def _change(with_id):
+    props = {'applies': {'type': 'boolean'}, 'hook': {'type': 'string'}, 'song': {'type': 'string'},
+             'caption_fixes': {'type': 'array', 'items': {'type': 'object', 'additionalProperties': False, 'required': ['index', 'text'],
+                                                          'properties': {'index': {'type': 'integer'}, 'text': {'type': 'string'}}}},
+             'what_changed': {'type': 'string'}}
+    if with_id:
+        props = {'edit_id': {'type': 'integer'}, **props}
+    return {'type': 'object', 'additionalProperties': False, 'required': list(props), 'properties': props}
+
+
+TRIAGE_SCHEMA = {
+    'type': 'object', 'additionalProperties': False,
+    'required': ['kind', 'scope', 'summary', 'rule', 'rejected', 'others'],
+    'properties': {
+        'kind': {'type': 'string', 'enum': ['edit', 'scrap']},
+        'scope': {'type': 'string', 'enum': ['all', 'style']},
+        'summary': {'type': 'string'},
+        'rule': {'type': 'string'},
+        'rejected': _change(False),
+        'others': {'type': 'array', 'items': _change(True)},
+    },
+}
+
+
+def standing_rules(eid=None, n=40):
+    """Rules for every editor, plus this editor's own stylistic ones (Matt: only style differs between editors)."""
+    rows = db().execute('SELECT kind, rule FROM rules WHERE active=1 AND (editor IS NULL OR editor=?) ORDER BY at DESC LIMIT ?', (eid, n)).fetchall()
+    return '\n'.join(f"- [{'editing' if r['kind'] == 'edit' else 'clip choice'}] {r['rule']}" for r in rows) or '(none yet)'
+
+
+def words_path(raw_id):
+    return os.path.join(WORK, 'prep', str(raw_id), 'words.json')
+
+
+def caption_tokens(raw_id):
+    """The caption words exactly as rendered, numbered so fixes can point at them."""
+    toks = json.load(open(words_path(raw_id)))['transcription']
+    return ' '.join(f"{i}:{t['text'].strip()}" for i, t in enumerate(toks) if t['text'].strip())
+
+
+def fix_captions(raw_id, fixes):
+    p = words_path(raw_id)
+    keep = p.replace('words.json', 'words.orig.json')
+    if not os.path.exists(keep):
+        shutil.copy(p, keep)
+    d = json.load(open(p))
+    for f in fixes:
+        if 0 <= f['index'] < len(d['transcription']):
+            d['transcription'][f['index']]['text'] = (' ' + f['text'].strip()) if f['text'].strip() else ''
+    json.dump(d, open(p, 'w'))
+
+
+def triage_prompt(rej, reason, others, pool):
+    spec = open(SPEC).read()
+    rules = spec[spec.index('## Hook rules'):spec.index('## What posts automatically')]
+    def item(e):
+        d = json.loads(e['decision'])
+        return (f"edit_id {e['id']} | hook: \"{e['hook']}\" | song: {e['song']} | post caption: \"{d.get('post_caption', '')}\"\n"
+                f"  caption words (index:word, as shown on screen in caps): {caption_tokens(e['raw_id'])}")
+    songs_txt = '\n'.join(f"- {r['file']} | {r['mood']}" for r in pool)
+    return f"""You run quality control for AI short-form editors of Andy Frisella's Real AF podcast.
+Matt (the owner) just REJECTED a finished clip and said why. Work out what he meant and act on it.
+
+His reason: \"\"\"{reason}\"\"\"
+
+The rejected clip:
+{item(rej)}
+
+1. kind: "edit" if the problem is in how the clip was edited (hook text, typo or wrong word in captions, music choice,
+   anything an editor can change); "scrap" if the clip itself is the problem (boring, no value, wrong subject, weak
+   moment): no edit can save it.
+   scope: "style" only if it's purely about this editor's look (fonts, colours, caption or hook styling, music taste);
+   everything else (subject matter, quality, spelling, hooks, clip choice) is "all": it applies to every editor.
+2. summary: one plain sentence saying what he objected to.
+3. rule: one standing rule, at most two sentences, that every editor will follow on all future clips so this doesn't
+   happen again. For "scrap", which clips to skip; for "edit", what to do differently. Keep it exactly as broad as his
+   reason: don't add requirements he didn't state.
+4. rejected: for "edit", the fix for this clip: applies=true and set only what changes (hook: new hook text or "";
+   song: a file name from the song list or ""; caption_fixes: [{{index, text}}] to correct caption words, text "" deletes
+   the word; what_changed: short plain description). Change only what his reason covers; never rewrite how Andy talks
+   ("gonna", "ya know" etc. stay unless he said otherwise). If the problem isn't actually in this clip, applies=false
+   and say so. If the fix needs something these tools can't change (crop, trim,
+   caption style, fonts), applies=false and say so in what_changed. For "scrap": applies=false, everything else empty.
+5. others: check EVERY clip below that is still waiting for review.
+   - For "edit": applies=true only if the same problem is clearly in that clip (cite it in what_changed), with its own
+     fix (same fields, same narrow scope). When in doubt, applies=false: a needless re-edit costs Matt a review.
+   - For "scrap": applies=true if it's similar enough that Matt would likely scrap it too; what_changed says why; no fixes.
+   Return one entry per clip, with its edit_id.
+
+Hook rules (any new hook must follow them):
+{rules}
+
+Song list (file | mood):
+{songs_txt}
+
+Clips waiting for review:
+""" + ('\n'.join(item(e) for e in others) or '(none)')
+
+
+def reedit(e, ch, why):
+    """New version of an edit with the given fixes, rendered and sent back to review."""
+    c = db()
+    d = json.loads(e['decision'])
+    hook, song, mstart = e['hook'], e['song'], e['music_start']
+    if ch.get('hook'):
+        hook = d['hook'] = ch['hook']
+    if ch.get('song') and ch['song'] in {r['file'] for r in songs()} and ch['song'] != e['song']:
+        try:
+            mstart, song = music_start(ch['song']), ch['song']
+            d['song'] = song
+        except ValueError:
+            pass
+    if ch.get('caption_fixes'):
+        fix_captions(e['raw_id'], ch['caption_fixes'])
+    v = (c.execute('SELECT MAX(version) FROM edits WHERE raw_id=? AND editor=?', (e['raw_id'], e['editor'])).fetchone()[0] or 0) + 1
+    note = f"Re-edited ({why}): {ch.get('what_changed', '')}".strip()
+    cur = c.execute('INSERT INTO edits(raw_id,editor,version,status,decision,hook,song,music_start,note,created,updated) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
+                    (e['raw_id'], e['editor'], v, 'decided', json.dumps(d), hook, song, mstart, note, time.time(), time.time()))
+    if e['status'] in ('ready', 'qa_failed'):
+        c.execute("UPDATE edits SET status='superseded', updated=? WHERE id=?", (time.time(), e['id']))
+    c.commit()
+    render(cur.lastrowid)  # the note keeps it in review: a human sees every re-edit
+    return cur.lastrowid
+
+
+def triage(edit_id):
+    lock = open(os.path.join(WORK, '.triage.lock'), 'w')
+    fcntl.flock(lock, fcntl.LOCK_EX)  # one rejection at a time
+    c = db()
+    rej = c.execute('SELECT * FROM edits WHERE id=?', (edit_id,)).fetchone()
+    fb = c.execute("SELECT reason FROM feedback WHERE edit_id=? AND action='reject' ORDER BY at DESC LIMIT 1", (edit_id,)).fetchone()
+    if not rej or not fb or not fb['reason']:
+        return log(f'triage edit {edit_id}: no rejection reason, nothing to do')
+    others = c.execute("SELECT * FROM edits WHERE status IN ('ready','qa_failed') AND id!=? ORDER BY id", (edit_id,)).fetchall()
+    t = ask_claude(triage_prompt(rej, fb['reason'], others, songs()), TRIAGE_SCHEMA)
+    c.execute('INSERT INTO rules(kind,rule,reason,source_edit,at,editor) VALUES(?,?,?,?,?,?)',
+              (t['kind'], t['rule'], fb['reason'], edit_id, time.time(), rej['editor'] if t['scope'] == 'style' else None))
+    c.commit()
+    log(f"triage edit {edit_id}: {t['kind']} - {t['summary']} | new rule: {t['rule']}")
+    by_id = {e['id']: e for e in others}
+    if t['kind'] == 'edit':
+        if t['rejected'].get('applies'):
+            try:
+                log(f"triage: edit {edit_id} re-edited as edit {reedit(rej, t['rejected'], f'you rejected edit {edit_id}')}")
+            except Exception as ex:
+                log(f'triage: re-edit of {edit_id} failed: {ex}')
+        else:
+            log(f"triage: edit {edit_id} can't be fixed automatically: {t['rejected'].get('what_changed', '')}")
+        for o in t['others']:
+            e = by_id.get(o.get('edit_id'))
+            if e and o.get('applies'):
+                try:
+                    log(f"triage: same problem in edit {e['id']}; re-edited as edit {reedit(e, o, f'same issue as edit {edit_id}')}")
+                except Exception as ex:
+                    log(f"triage: re-edit of {e['id']} failed: {ex}")
+    else:
+        for o in t['others']:
+            e = by_id.get(o.get('edit_id'))
+            if e and o.get('applies'):
+                flag = f"looks like edit {edit_id} you scrapped: {o.get('what_changed', '')}".strip()
+                c.execute('UPDATE edits SET note=? WHERE id=?', ('; '.join(x for x in (e['note'], flag) if x), e['id']))
+                log(f"triage: edit {e['id']} flagged as similar to scrapped edit {edit_id}")
+        c.commit()
+
+
+# ---------- the content profile: what Matt approves and rejects, for every editor ----------
+PROFILE = os.path.join(HERE, '..', 'Context', 'AI Editors - Content Profile.md')  # private project notes, not the public repo
+
+
+def content_profile():
+    return open(PROFILE).read() if os.path.exists(PROFILE) else '(empty: no review decisions yet)'
+
+
+PROFILE_SCHEMA = {'type': 'object', 'additionalProperties': False, 'required': ['profile', 'changed'],
+                  'properties': {'profile': {'type': 'string'}, 'changed': {'type': 'string'}}}
+
+
+def update_profile():
+    """Rewrite the content profile from every review decision so far. Matt's goal: editors so tuned that almost nothing
+    needs review, and what does almost always gets approved."""
+    c = db()
+    rows = c.execute("SELECT f.action, f.reason, f.editor, e.hook, e.note, p.transcript FROM feedback f JOIN edits e ON e.id=f.edit_id "
+                     "LEFT JOIN preps p ON p.raw_id=e.raw_id ORDER BY f.at").fetchall()
+    dec = '\n'.join(f"- {r['action'].upper()} | hook \"{r['hook']}\" | editor flagged: {r['note'] or 'nothing'} | Matt's reason: {r['reason'] or '(none)'}"
+                    f" | clip: \"{(r['transcript'] or '')[:400]}\"" for r in rows[-150:])
+    prompt = f"""You keep the CONTENT PROFILE for a network of AI short-form editors posting Andy Frisella clips.
+It tells every editor what Matt (the owner) approves and what he rejects, so the editors can decide on their own:
+skip what he'd reject, post what he'd approve, and only send him what is genuinely new or unclear.
+Matt: "I want the video editing models to learn that certain political things are fine and other political things are not
+fine. So it's not just politics or out of context or controversial. It's certain things and not other things."
+
+Matt's written rules always win: the hard exclusions and the hook rules in the Output Spec (text hooks must raise a
+question) are never relaxed here. The editor's flag "opening does not raise a question" is about Andy's first spoken
+line, not the text hook. Reasons Matt or Natalie typed outweigh what you infer from an approval.
+
+Rewrite the profile from all review decisions below. Be specific: name the kinds of takes, topics and framings, not broad
+categories ("criticising both parties' tribalism: approved" rather than "politics: mixed"). Every line must be backed by
+the decisions; don't invent preferences. Note how many decisions back each line, e.g. (2 approved). Keep anything under
+"## Matt's own rules" exactly as written. Markdown, under about 500 words, these sections:
+## Approved: post without review
+## Rejected: skip these clips
+## Unclear: still send to review
+## Quality standards
+## Matt's own rules
+
+Current profile:
+{content_profile()}
+
+Review decisions, oldest first (Matt's or Natalie's; the editor's own flag shows what it was worried about):
+{dec or '(none)'}"""
+    out = ask_claude(prompt, PROFILE_SCHEMA)
+    body = out['profile'].strip()
+    if body.startswith('# '):
+        body = body.split('\n', 1)[-1].lstrip()
+    head = ("# AI Editors: Content Profile\n\nRewritten automatically after each review decision "
+            f"(last {dt.datetime.now():%Y-%m-%d %H:%M}). Applies to every editor. Edit freely; "
+            "text under \"Matt's own rules\" is kept as is.\n\n")
+    open(PROFILE, 'w').write(head + body + '\n')
+    log(f"content profile updated: {out['changed']}")
+
+
+def learn(edit_id, action):
+    if action == 'reject':
+        triage(edit_id)
+    lock = open(os.path.join(WORK, '.profile.lock'), 'w')
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    update_profile()
 
 
 # ---------- queue / post / track ----------
@@ -690,7 +953,7 @@ def status():
 
 if __name__ == '__main__':
     a = sys.argv[1:] or ['']
-    cmds = {'takedown': lambda: takedown(a[1], ' '.join(a[2:])), 'removed': lambda: removed(a[1]), 'scan': scan, 'status': status, 'accounts': accounts, 'reconcile': reconcile, 'queue': queue, 'post': post, 'track': track, 'stats': stats, 'run': run,
+    cmds = {'takedown': lambda: takedown(a[1], ' '.join(a[2:])), 'removed': lambda: removed(a[1]), 'scan': scan, 'status': status, 'accounts': accounts, 'reconcile': reconcile, 'queue': queue, 'post': post, 'track': track, 'stats': stats, 'run': run, 'triage': lambda: triage(int(a[1])), 'learn': lambda: learn(int(a[1]), a[2]), 'profile': update_profile,
             'prep': lambda: prep(a[1]), 'render': lambda: render(int(a[1])),
             'approve': lambda: review(int(a[1]), 'approve', ' '.join(a[2:])), 'reject': lambda: review(int(a[1]), 'reject', ' '.join(a[2:])),
             'decide': lambda: decide(int(a[1]), a[2], a[a.index('--manual') + 1] if '--manual' in a else None)}

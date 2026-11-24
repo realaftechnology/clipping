@@ -56,6 +56,18 @@ def editor_issue(eid, lines):
     return errs[-1][20:200] if errs else None
 
 
+def learning(c, eid, days=14):
+    """Is the editor getting more precise? Share of finished clips that needed a human, and how many of those were approved."""
+    since = time.time() - days * 86400
+    made = c.execute("SELECT COUNT(*) FROM edits WHERE editor=? AND created>? AND status NOT IN ('excluded','skipped','superseded','decided')",
+                     (eid, since)).fetchone()[0]
+    held = c.execute("SELECT COUNT(*) FROM edits WHERE editor=? AND created>? AND note<>'' AND status NOT IN ('excluded','skipped','superseded','decided')",
+                     (eid, since)).fetchone()[0]
+    ok, no = [c.execute('SELECT COUNT(*) FROM feedback WHERE editor=? AND action=? AND at>?', (eid, a, since)).fetchone()[0] for a in ('approve', 'reject')]
+    rules = c.execute('SELECT COUNT(*) FROM rules WHERE active=1 AND (editor IS NULL OR editor=?)', (eid,)).fetchone()[0]
+    return {'days': days, 'made': made, 'held': held, 'approved': ok, 'rejected': no, 'rules': rules}
+
+
 def overview():
     c = fw.db()
     now = time.time()
@@ -100,7 +112,8 @@ def overview():
                      'hook': f"{style.get('hook_font')} {style.get('hook_size')}px, {style.get('hook_color')} on {style.get('hook_bg')}"},
             'accounts': accts, 'counts': counts, 'totals': {k: t[k] or 0 for k in t.keys()},
             'next_post': {'slot': nxt['slot'], 'hook': nxt['hook']} if nxt else None,
-            'editor_issue': editor_issue(ed['id'], all_lines[-400:])})
+            'editor_issue': editor_issue(ed['id'], all_lines[-400:]),
+            'learning': learning(c, ed['id'])})
 
     posts = {}
     for r in c.execute("SELECT p.*, e.hook, s.views, s.likes, s.comments, s.shares, s.saves, s.taken_at FROM posts p "
