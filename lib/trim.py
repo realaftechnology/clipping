@@ -22,6 +22,8 @@ import numpy as np
 
 src, words_p, plan_p, out = sys.argv[1:5]
 crop = None
+inserts = json.loads(sys.argv[sys.argv.index('--inserts') + 1]) if '--inserts' in sys.argv else []  # from lib/inserts.py
+in_insert = lambda t: any(x['start'] - 0.2 <= t <= x['end'] + 0.2 for x in inserts)
 if '--crop' in sys.argv:
     cx, cw = map(int, sys.argv[sys.argv.index('--crop') + 1].split(','))
     crop = (cx, cw)
@@ -88,7 +90,9 @@ for s, e in segs:
             j = i
             while j < i_end and quiet[j]:
                 j += 1
-            if (j - i) / 100 > 0.45 and i / 100 > s + 0.05 and j / 100 < e - 0.05:
+            word_inside = any(i / 100 - 0.1 <= wt(w_, 'from') <= j / 100 + 0.05 for w_ in keep)  # never shave off a quiet word
+            if (j - i) / 100 > 0.45 and i / 100 > s + 0.05 and j / 100 < e - 0.05 and not in_insert(i / 100) and not in_insert(j / 100) \
+                    and not word_inside:
                 final.append([last, i / 100 + 0.12])
                 last = j / 100 - 0.08
             i = j
@@ -97,30 +101,59 @@ for s, e in segs:
     final.append([last, e])
 final = [[round(a_, 3), round(b_, 3)] for a_, b_ in final if b_ - a_ > 0.12]
 
-# re-time the words onto the new timeline
-new_t, offset = [], 0.0
+# re-time the words onto the new timeline. Every kept word stays in the captions: whisper's word times run long (they
+# swallow the pause after a word), so a word is placed by where it starts, and one whose start fell inside a shortened
+# pause goes to the start of the next piece (that's where its sound is).
+starts, offset = [], 0.0
 for s, e in final:
-    for i in keep:
-        f_, t_ = wt(i, 'from'), wt(i, 'to')
-        mid = (f_ + t_) / 2
-        if s <= mid < e:
-            new_t.append({'text': T[i]['text'], 'offsets': {'from': int((max(f_, s) - s + offset) * 1000), 'to': int((min(t_, e) - s + offset) * 1000)}})
+    starts.append((s, e, offset))
     offset += e - s
+new_t = []
+for i in keep:
+    f_, t_ = wt(i, 'from'), wt(i, 'to')
+    seg = next((x for x in starts if x[0] - 0.05 <= f_ < x[1]), None) or next((x for x in starts if x[0] >= f_), starts[-1])
+    s, e, off = seg
+    a_ = max(f_, s) - s + off
+    b_ = max(a_ + 0.08, min(t_, e) - s + off)
+    new_t.append({'text': T[i]['text'], 'offsets': {'from': int(a_ * 1000), 'to': int(b_ * 1000)}})
+for k in range(1, len(new_t)):  # keep times in order
+    if new_t[k]['offsets']['from'] < new_t[k - 1]['offsets']['from']:
+        new_t[k]['offsets']['from'] = new_t[k - 1]['offsets']['from']
 json.dump({'transcription': new_t}, open(f'{out}/words.json', 'w'))
 
-# cut: per segment trim + fades, alternate segments punched in 7% around the speaker
+# cut: per segment trim + fades. Landscape clips stay landscape (render_clip.sh crops to the speaker) unless an insert
+# (a video Andy reacts to, a graphic) is kept: then the output is assembled vertically here, the speaker cropped as usual
+# and each insert shown whole, full width over a blurred fill, so the viewer sees what he's reacting to.
 probe = json.loads(subprocess.run(['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height',
                                    '-of', 'json', src], capture_output=True, text=True, check=True).stdout)['streams'][0]
 W, H = probe['width'], probe['height']
 fx = (crop[0] + crop[1] / 2) if crop and crop[0] >= 0 else W / 2
 fy = H * 0.38
 Z = 1.07
-parts, zoomed = [], False
-for k, (s, e) in enumerate(final):
+landscape = bool(crop and crop[0] >= 0)
+pieces = []  # (start, end, is_insert) with each segment split at insert edges
+for s_, e_ in final:
+    cuts = sorted({s_, e_} | {t for x in inserts for t in (x['start'], x['end']) if s_ < t < e_})
+    for a_, b_ in zip(cuts, cuts[1:]):
+        if b_ - a_ > 0.04:
+            pieces.append((a_, b_, any(x['start'] <= (a_ + b_) / 2 <= x['end'] for x in inserts)))
+vertical = landscape and any(p_[2] for p_ in pieces)
+parts, zoomed, prev_end = [], False, None
+for k, (s, e, ins) in enumerate(pieces):
     v = f'[0:v]trim={s}:{e},setpts=PTS-STARTPTS'
-    if k and s - final[k - 1][1] >= 0.6:  # switch framing only where a real chunk was cut; tiny pause trims keep the shot
+    if prev_end is not None and s - prev_end >= 0.6:  # switch framing only where a real chunk was cut
         zoomed = not zoomed
-    if zoomed:
+    prev_end = e
+    if vertical and ins:
+        v += (f',split[f{k}][g{k}];[g{k}]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=24:2,eq=brightness=-0.12[bg{k}];'
+              f'[f{k}]scale=1080:-2:flags=lanczos[fg{k}];[bg{k}][fg{k}]overlay=0:560')
+    elif vertical:
+        cw_ = crop[1] / (Z if zoomed else 1)
+        ch_ = H / (Z if zoomed else 1)
+        x_ = fx - cw_ / 2 if not zoomed else fx - cw_ / 2
+        y_ = 0 if not zoomed else fy * (1 - 1 / Z)
+        v += f',crop={int(cw_) // 2 * 2}:{int(ch_) // 2 * 2}:{max(0, int(x_))}:{int(y_)},scale=1080:1920:flags=lanczos'
+    elif zoomed:
         cw_, ch_ = int(W / Z) // 2 * 2, int(H / Z) // 2 * 2
         v += f',crop={cw_}:{ch_}:{int(fx * (1 - 1 / Z))}:{int(fy * (1 - 1 / Z))},scale={W}:{H}:flags=lanczos'
     v += f',setsar=1,format=yuv420p[v{k}]'
@@ -128,8 +161,9 @@ for k, (s, e) in enumerate(final):
     fa = min(0.015, d / 4)
     au = f'[0:a]atrim={s}:{e},asetpts=PTS-STARTPTS,afade=t=in:d={fa},afade=t=out:st={d - fa:.3f}:d={fa}[a{k}]'
     parts += [v, au]
-fc = ';'.join(parts) + ';' + ''.join(f'[v{k}][a{k}]' for k in range(len(final))) + f'concat=n={len(final)}:v=1:a=1[v][a]'
+fc = ';'.join(parts) + ';' + ''.join(f'[v{k}][a{k}]' for k in range(len(pieces))) + f'concat=n={len(pieces)}:v=1:a=1[v][a]'
 subprocess.run(['ffmpeg', '-v', 'error', '-y', '-i', src, '-filter_complex', fc, '-map', '[v]', '-map', '[a]',
                 '-c:v', 'libx264', '-crf', '14', '-preset', 'fast', '-c:a', 'pcm_s16le', f'{out}/source.mov'], check=True,
                stdin=subprocess.DEVNULL)
-print(json.dumps({'duration': round(offset, 3), 'cuts': len(final) - 1, 'segments': final}))
+print(json.dumps({'duration': round(offset, 3), 'cuts': len(final) - 1, 'segments': final, 'vertical': vertical,
+                  'inserts_kept': sum(1 for p_ in pieces if p_[2])}))

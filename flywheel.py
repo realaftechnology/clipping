@@ -347,7 +347,12 @@ Also:
   {{from, to, why}} to cut inside: filler (um, uh, like, you know, I mean), stutters and repeated words, false starts,
   and whole sentences or asides that slow it down, only when what's left still reads as one natural, continuous
   thought. Never remove part of a sentence that leaves it broken or changes its meaning. Never cut the payoff. Dead
-  air is shortened automatically; don't list pauses. summary: what you cut, in a few words. If it's already tight:
+  air is shortened automatically; don't list pauses.
+  On-screen inserts in this clip: {inserts_text(row)}
+  Matt, after a clip went out with the video Andy reacted to cut: "you can't remove context like that." If any line you
+  keep refers to or reacts to an insert ("play this", "look at that", laughing at it), keep the insert's words too: it is
+  shown full width in the finished clip. Only cut an insert when nothing you keep depends on it. If the clip can't work
+  without context it doesn't have, set usable=false. summary: what you cut, in a few words. If it's already tight:
   start 0 (or the first sentence start), end = last sentence end, remove []."""
 
 
@@ -442,7 +447,7 @@ def qa(path, src_dur):
     return {'lufs': lufs, 'duration': round(dur, 2), 'problems': problems}
 
 
-def render(edit_id):
+def render(edit_id, retried=False):
     c = db()
     e = c.execute('SELECT * FROM edits WHERE id=?', (edit_id,)).fetchone()
     row = c.execute('SELECT * FROM raw_clips WHERE id=?', (e['raw_id'],)).fetchone()
@@ -458,14 +463,38 @@ def render(edit_id):
         t = tighten(e, row, pr, d['trim'])
         if t:
             env.update(TRIM_SRC=t['src'], TRIM_WORDS=t['words'], TRIM_DUR=str(t['duration']))
+            if t['vertical']:
+                env['TRIM_VERTICAL'] = '1'
             src_dur = t['duration']
     subprocess.run([os.path.join(HERE, 'lib', 'render_clip.sh'), e['editor'], str(e['raw_id']), e['hook'], e['song'], str(e['music_start'] or 0), out],
                    check=True, capture_output=True, env=env, stdin=subprocess.DEVNULL)
     q = qa(out, src_dur)
-    safe = not d['risk_flags'] and (d['opening_raises_question'] or d.get('profile_verdict') == 'approve') and not d['topical'] and not e['note']
+    c.execute('UPDATE edits SET path=?, qa=?, updated=? WHERE id=?', (out, json.dumps(q), time.time(), edit_id))
+    c.commit()
+    note = e['note'] or ''
+    if not q['problems']:
+        # Matt, 2026-11-24: "does the video still work and make sense after the edit?" Watch it; re-cut once if not.
+        try:
+            sc = sense_check(edit_id)
+        except Exception as ex:
+            sc = {'works': False, 'problems': [f'context check could not run: {ex}'], 'fix': ''}
+        if not sc['works'] and not retried and d.get('trim'):
+            log(f"edit {edit_id} context check failed, re-cutting: {'; '.join(sc['problems'])[:200]}")
+            try:
+                d['trim'] = retrim(e, row, d, sc)
+                c.execute('UPDATE edits SET decision=? WHERE id=?', (json.dumps(d), edit_id))
+                c.commit()
+                return render(edit_id, retried=True)
+            except Exception as ex:
+                log(f'edit {edit_id} re-cut failed: {ex}')
+        if not sc['works']:
+            note = '; '.join(x for x in (note, 'Context check: ' + '; '.join(sc['problems']) + (f" | Fix: {sc['fix']}" if sc['fix'] else '')) if x)
+            c.execute('UPDATE edits SET note=? WHERE id=?', (note[:1500], edit_id))
+            c.commit()
+    safe = not d['risk_flags'] and (d['opening_raises_question'] or d.get('profile_verdict') == 'approve') and not d['topical'] and not note
     # Matt, 2026-11-23: "Automated posts should be safest stuff." Anything flagged waits for a human, even with auto_post on.
     status = 'qa_failed' if q['problems'] else ('approved' if ed.get('auto_post') and safe else 'ready')
-    c.execute('UPDATE edits SET status=?, path=?, qa=?, updated=? WHERE id=?', (status, out, json.dumps(q), time.time(), edit_id))
+    c.execute('UPDATE edits SET status=?, updated=? WHERE id=?', (status, time.time(), edit_id))
     c.commit()
     if status == 'ready' and ed.get('review_dir'):  # copy for human review (e.g. a Drive folder Natalie sees)
         rd = os.path.expanduser(ed['review_dir'])
@@ -1021,6 +1050,30 @@ def refs_for_prompt(limit=60):
 END = re.compile(r'[.?!]["\')\]]*$')
 
 
+def inserts_for(row):
+    """On-screen inserts in a raw clip (lib/inserts.py), cached next to its words."""
+    p = os.path.join(WORK, 'prep', str(row['id']), 'inserts.json')
+    if not os.path.exists(p):
+        out = subprocess.run([sys.executable, os.path.join(HERE, 'lib', 'inserts.py'), local_copy(row)], capture_output=True, text=True,
+                             check=True, stdin=subprocess.DEVNULL).stdout
+        open(p, 'w').write(out.strip() or '[]')
+    return json.load(open(p))
+
+
+def inserts_text(row):
+    ins = inserts_for(row)
+    if not ins:
+        return 'none: the picture stays on the podcast shot throughout.'
+    toks = json.load(open(words_path(row['id'])))['transcription']
+    out = []
+    for x in ins:
+        idx = [i for i, t in enumerate(toks) if t['text'].strip() and x['start'] <= t['offsets']['from'] / 1000 <= x['end']]
+        rng = f"words {idx[0]}-{idx[-1]}" if idx else 'no speech'
+        out.append(f"{x['start']:.1f}-{x['end']:.1f} s ({rng})")
+    return ('; '.join(out) + '. During these the picture leaves the podcast shot: usually a video, clip or graphic Andy is '
+            'reacting to (it plays on screen; its own audio may be in the transcript).')
+
+
 def snap_trim(tokens, plan):
     """Enforce whole sentences: start on a sentence start, end on a sentence end; drop cuts outside the kept range."""
     words = [t['text'].strip() for t in tokens]
@@ -1033,8 +1086,30 @@ def snap_trim(tokens, plan):
     end = max(start, min(plan.get('end', n - 1), n - 1))
     while end < n - 1 and not END.search(words[end] or ''):     # run on to the end of this sentence
         end += 1
-    remove = [r for r in plan.get('remove', []) if start <= r['from'] <= r['to'] <= end]
+    remove = [r for r in plan.get('remove', []) if start <= r['from'] <= r['to'] <= end and removal_ok(words, r['from'], r['to'])]
     return {'start': start, 'end': end, 'remove': remove}
+
+
+FILLER = {'um', 'uh', 'uhm', 'erm', 'ah', 'like', 'you', 'know', 'i', 'mean', 'so', 'okay', 'ok', 'right', 'yeah', 'just', 'kind', 'of',
+          'sort', 'basically', 'literally', 'actually', 'dude', 'man', 'bro', 'and', 'but', 'well'}
+norm = lambda w: re.sub(r"[^a-z0-9']", '', w.lower())
+
+
+def removal_ok(words, a, b):
+    """Matt: never cut a sentence off. A cut inside a sentence is allowed only for filler or a stutter/repeat; anything
+    else must be whole sentences (starts after a sentence end, ends on one)."""
+    cut = [norm(w) for w in words[a:b + 1] if norm(w)]
+    if not cut:
+        return True
+    whole = (a == 0 or END.search(words[a - 1] or '')) and END.search(words[b] or '')
+    if whole:
+        return True
+    n = len(cut)
+    after = [norm(w) for w in words[b + 1:b + 1 + n] if norm(w)]
+    before = [norm(w) for w in words[max(0, a - n):a] if norm(w)]
+    if cut == after or cut == before:          # stutter / restart: "you get, you get"
+        return True
+    return n <= 4 and all(w in FILLER for w in cut)  # short filler: "you know", "I mean", "like"
 
 
 def tighten(e, row, pr, plan):
@@ -1049,12 +1124,120 @@ def tighten(e, row, pr, plan):
     json.dump(p, open(os.path.join(work, 'plan.json'), 'w'))
     src = local_copy(row)
     crop = json.loads(pr['crop']) if pr['crop'] and pr['crop'] != 'null' else None
-    cmd = [sys.executable, os.path.join(HERE, 'lib', 'trim.py'), src, words_p, os.path.join(work, 'plan.json'), work]
+    cmd = [sys.executable, os.path.join(HERE, 'lib', 'trim.py'), src, words_p, os.path.join(work, 'plan.json'), work,
+           '--inserts', json.dumps(inserts_for(row))]
     if crop:
         cmd += ['--crop', f"{crop['x']},{crop['w']}"]
     r = json.loads(subprocess.run(cmd, capture_output=True, text=True, check=True, stdin=subprocess.DEVNULL).stdout.strip().splitlines()[-1])
     log(f"edit {e['id']} trimmed {pr['duration']:.1f}s -> {r['duration']:.1f}s ({r['cuts']} cuts): {plan.get('summary', '')}")
-    return {'src': os.path.join(work, 'source.mov'), 'words': os.path.join(work, 'words.json'), 'duration': r['duration']}
+    return {'src': os.path.join(work, 'source.mov'), 'words': os.path.join(work, 'words.json'), 'duration': r['duration'],
+            'vertical': r.get('vertical', False)}
+
+
+# ---------- does the finished clip still make sense? (Matt, 2026-11-24) ----------
+# "you can't remove context like that. And you got to check, like, does the video still work and make sense after
+# the edit?" (after an edit cut the video Andy was reacting to, so the posted clip had zero context)
+SENSE_SCHEMA = {'type': 'object', 'additionalProperties': False, 'required': ['works', 'problems', 'fix'], 'properties': {
+    'works': {'type': 'boolean'}, 'problems': {'type': 'array', 'items': {'type': 'string'}}, 'fix': {'type': 'string'}}}
+
+
+def sense_check(edit_id):
+    """Watch the finished clip as a viewer would (frames + exactly what's said) against the full raw clip.
+    Returns {'works', 'problems', 'fix'}."""
+    c = db()
+    e = c.execute('SELECT * FROM edits WHERE id=?', (edit_id,)).fetchone()
+    raw_words = json.load(open(words_path(e['raw_id'])))['transcription']
+    full = ''.join(t['text'] for t in raw_words).strip()
+    tw = os.path.join(WORK, 'trim', str(edit_id), 'words.json')
+    kept = ''.join(t['text'] for t in json.load(open(tw))['transcription']).strip() if os.path.exists(tw) else full
+    work = os.path.join(WORK, 'check', str(edit_id))
+    os.makedirs(work, exist_ok=True)
+    dur = probe(e['path'])[3]
+    frames = []
+    for k in range(8):
+        fp = f'{work}/out{k}.jpg'
+        subprocess.run(['ffmpeg', '-v', 'error', '-y', '-ss', f'{dur * (k + 0.5) / 8:.2f}', '-i', e['path'], '-frames:v', '1', '-vf', 'scale=360:-2', fp],
+                       check=True, stdin=subprocess.DEVNULL)
+        frames.append(os.path.basename(fp))
+    row = c.execute('SELECT * FROM raw_clips WHERE id=?', (e['raw_id'],)).fetchone()
+    src = local_copy(row)
+    rdur = probe(src)[3]
+    for k in range(8):  # the raw clip too, so cut visual context (a video he reacts to, a graphic) is visible
+        fp = f'{work}/raw{k}.jpg'
+        subprocess.run(['ffmpeg', '-v', 'error', '-y', '-ss', f'{rdur * (k + 0.5) / 8:.2f}', '-i', src, '-frames:v', '1', '-vf', 'scale=480:-2', fp],
+                       check=True, stdin=subprocess.DEVNULL)
+        frames.append(os.path.basename(fp))
+    prompt = f"""You are the last check before a short-form clip of Andy Frisella posts. Matt (the owner) took a clip down because
+"the video that he reacted to was not included. So there's zero context... you can't remove context like that. And you
+got to check, like, does the video still work and make sense after the edit?"
+
+Read the frames in this folder: out0-out7.jpg are the FINISHED clip (evenly spaced), raw0-raw7.jpg the raw clip it was
+cut from. Then judge the finished clip as a viewer who has seen nothing else.
+
+On-screen hook: "{e['hook']}"
+What the finished clip says (exactly, after the edit):
+\"\"\"{kept}\"\"\"
+What the raw clip said before editing:
+\"\"\"{full}\"\"\"
+
+works=false if ANY of these is true:
+- it refers to something the viewer never sees or hears ("this video", "look at that", "that guy", "he said") because the
+  edit cut it or the vertical crop hides it;
+- Andy reacts to or answers something that isn't in the clip;
+- a line depends on setup that was cut, or the point no longer follows;
+- it starts mid-sentence or stops before the thought finishes;
+- the hook promises something the clip doesn't deliver.
+Swearing, bluntness and opinions are fine. problems: each issue, specific. fix: how to re-cut it (what to keep, and
+whether visual context must be shown), or "" if it works."""
+    cmd = ['claude', '-p', prompt, '--output-format', 'json', '--tools', 'Read', '--allowedTools', 'Read', '--no-session-persistence',
+           '--setting-sources', '', '--json-schema', json.dumps(SENSE_SCHEMA)]
+    out = json.loads(subprocess.run(cmd, capture_output=True, text=True, cwd=work, timeout=600).stdout or '{}')
+    if out.get('is_error') or 'structured_output' not in out:
+        raise RuntimeError(f"sense check failed to run: {str(out.get('result'))[:200]}")
+    return out['structured_output']
+
+
+def retrim(e, row, d, sc):
+    """A new trim plan after a failed context check."""
+    schema = {'type': 'object', 'additionalProperties': False, 'required': ['trim'], 'properties': {'trim': DECISION_SCHEMA['properties']['trim']}}
+    prompt = f"""Re-cut a short-form clip of Andy Frisella. The last cut failed the "does it still make sense" check.
+
+Problems found: {'; '.join(sc['problems'])}
+Suggested fix: {sc['fix']}
+Previous trim plan: {json.dumps(d['trim'])}
+Hook: "{d['hook']}"
+
+Caption words (index:word): {caption_tokens(row['id'])}
+On-screen inserts: {inserts_text(row)}
+
+Rules (Matt): never start mid-sentence or cut a sentence off; cut only filler, repeats, false starts and asides when
+what's left is one natural, continuous thought; never remove context the clip depends on (keep any insert that kept
+lines react to; it's shown full width). Return trim: start (a sentence start), end (a sentence end), remove ranges with
+why, summary."""
+    return ask_claude(prompt, schema)['trim']
+
+
+def hold_for_review(edit_id, why):
+    """Pull an edit off the schedule (if it hasn't posted) and send it to review with the reason."""
+    c = db()
+    c.execute("DELETE FROM posts WHERE edit_id=? AND status='queued'", (edit_id,))
+    c.execute("UPDATE edits SET status='ready', note=?, updated=? WHERE id=? AND status IN ('approved','queued','decided')",
+              (why[:900], time.time(), edit_id))
+    c.commit()
+    log(f'edit {edit_id} held for review: {why[:200]}')
+
+
+def check_cmd(ids):
+    for i in ids:
+        try:
+            r = sense_check(i)
+        except Exception as ex:
+            log(f'sense check edit {i}: {ex}')
+            continue
+        if r['works']:
+            log(f'sense check edit {i}: works')
+        else:
+            hold_for_review(i, 'Context check: ' + '; '.join(r['problems']) + (f" | Fix: {r['fix']}" if r['fix'] else ''))
 
 
 # ---------- queue / post / track ----------
@@ -1467,7 +1650,7 @@ def status():
 
 if __name__ == '__main__':
     a = sys.argv[1:] or ['']
-    cmds = {'takedown': lambda: takedown(a[1], ' '.join(a[2:])), 'removed': lambda: removed(a[1]), 'scan': scan, 'status': status, 'accounts': accounts, 'reconcile': reconcile, 'queue': queue, 'post': post, 'track': track, 'stats': stats, 'run': run, 'triage': lambda: triage(int(a[1])), 'learn': lambda: learn(int(a[1]), a[2]), 'profile': update_profile, 'learn-performance': lambda: learn_performance('--force' in a), 'refs': lambda: refs_cmd(a[1] if len(a) > 1 else None),
+    cmds = {'takedown': lambda: takedown(a[1], ' '.join(a[2:])), 'removed': lambda: removed(a[1]), 'scan': scan, 'status': status, 'accounts': accounts, 'reconcile': reconcile, 'queue': queue, 'post': post, 'track': track, 'stats': stats, 'run': run, 'triage': lambda: triage(int(a[1])), 'check': lambda: check_cmd([int(x) for x in a[1:]]), 'learn': lambda: learn(int(a[1]), a[2]), 'profile': update_profile, 'learn-performance': lambda: learn_performance('--force' in a), 'refs': lambda: refs_cmd(a[1] if len(a) > 1 else None),
             'prep': lambda: prep(a[1]), 'render': lambda: render(int(a[1])),
             'approve': lambda: review(int(a[1]), 'approve', ' '.join(a[2:])), 'reject': lambda: review(int(a[1]), 'reject', ' '.join(a[2:])),
             'decide': lambda: decide(int(a[1]), a[2], a[a.index('--manual') + 1] if '--manual' in a else None)}

@@ -18,6 +18,7 @@ src=${src//$'\x01'/ }
 # tightened version from lib/trim.py (the editor's trim plan): its own video+voice, length and re-timed words
 WORDS="$WORK/prep/$id/words.json"
 if [[ -n $TRIM_SRC ]]; then src=$TRIM_SRC; dur=$TRIM_DUR; WORDS=$TRIM_WORDS; fi
+[[ -n $TRIM_VERTICAL ]] && cx=-1   # trim.py already built the vertical frame (speaker crop + shown inserts)
 job=$WORK/render/$id; rm -rf "$job"; mkdir -p "$job"
 python3 "$HERE/captions.py" "$WORDS" "$job/overlay.html" --font "$(sty caption_font)" --size $(sty caption_size) --y $(sty caption_y) --active "$(sty caption_active)" $([[ $(sty caption_animate) == True ]] && echo --animate) >/dev/null
 # hook title: native TikTok/Instagram-style text box (sentence case, as typed), static, inside the captions page
