@@ -240,26 +240,26 @@ function draw() {
     </g>`;
     if (!open.has(b.id)) continue;
     // the editor's brand set
-    const [bx, by] = pol(355, ang), S = 116, bid = `b${i}`;
+    const [bx, by] = pol(345, ang), bid = `b${i}`;
     lines.push(`<path id="${bid}" d="M${x},${y} L${bx},${by}" stroke="${cB}" stroke-opacity=".6" stroke-width="2" fill="none" class="${reduce ? '' : 'draw'}"/>`);
     edges.push({id: bid, w: 0.7, c: cB});
     g += `<g class="node grow" tabindex="0" role="button" aria-label="Editor ${pad(i)} brand set" onclick="showSet('${b.id}')" onkeydown="if(event.key==='Enter')showSet('${b.id}')"
         onmousemove="tipShow(event,'<b>Brand set</b> · Editor ${pad(i)}<br>${setBad ? `<span style=&quot;color:var(--bad)&quot;>${aBad.length} account${aBad.length > 1 ? 's' : ''} with a problem</span><br>` : ''}Tap for stats and review')" onmouseleave="tipHide()" style="color:${cB};animation-delay:.1s">
-      <rect x="${bx - S / 2 - 22}" y="${by - S / 2 - 22}" width="${S + 44}" height="${S + 44}" rx="40" fill="url(#halo)" class="breathe ${setBad ? 'alarm' : ''}"/>
-      <rect x="${bx - S / 2}" y="${by - S / 2}" width="${S}" height="${S}" rx="18" fill="var(--node)" stroke="${cB}" stroke-width="2" class="ring ${setBad ? 'alarm-ring' : ''}"/>
-      <text class="sub" x="${bx}" y="${by - 22}" font-size="10" letter-spacing=".1em">BRAND SET</text>
-      ${rev ? `<g onclick="event.stopPropagation();showSet('${b.id}','review')"><circle cx="${bx + S / 2 - 4}" cy="${by - S / 2 + 4}" r="13" fill="var(--flag)"/><text x="${bx + S / 2 - 4}" y="${by - S / 2 + 8}" text-anchor="middle" font-size="11" font-weight="700" fill="#111">${rev}</text></g>` : ''}
-      <text class="lbl" x="${bx}" y="${by + 24}" font-size="26">${fmt(b.totals.views)}</text>
-      <text class="sub" x="${bx}" y="${by + 42}" font-size="10" letter-spacing=".08em">VIEWS</text>
+      <circle cx="${bx}" cy="${by}" r="74" fill="url(#halo)" class="breathe ${setBad ? 'alarm' : ''}"/>
+      <circle cx="${bx}" cy="${by}" r="42" fill="var(--node)" stroke="${cB}" stroke-width="2" class="ring ${setBad ? 'alarm-ring' : ''}"/>
+      <text class="sub" x="${bx}" y="${by - 13}" font-size="8" letter-spacing=".1em">BRAND SET</text>
+      <text class="lbl" x="${bx}" y="${by + 8}" font-size="19">${fmt(b.totals.views)}</text>
+      <text class="sub" x="${bx}" y="${by + 22}" font-size="8" letter-spacing=".08em">VIEWS</text>
+      ${rev ? `<g onclick="event.stopPropagation();showSet('${b.id}','review')"><circle cx="${bx + 31}" cy="${by - 31}" r="12" fill="var(--flag)"/><text x="${bx + 31}" y="${by - 27}" text-anchor="middle" font-size="11" font-weight="700" fill="#111">${rev}</text></g>` : ''}
     </g>`;
     // its accounts, one per platform
-    const n = b.accounts.length, fan = 26;
+    const n = b.accounts.length, fan = 32, L = 170;
     b.accounts.forEach((a, k) => {
-      const pang = ang + (k - (n - 1) / 2) * fan, [px, py] = pol(505, pang), p = PF[a.platform] || [a.platform, a.platform.slice(0, 2).toUpperCase(), null];
+      const pang = (ang + (k - (n - 1) / 2) * fan) * Math.PI / 180, px = bx + L * Math.cos(pang), py = by + L * Math.sin(pang), p = PF[a.platform] || [a.platform, a.platform.slice(0, 2).toUpperCase(), null];
       const pid = `p${i}_${k}`, v = bsViews(b, a.platform), handle = (a.handle || '').replace(/^@/, '');
       const href = a.connected && handle && p[2] ? p[2](handle) : null, cP = a.issue ? bad : c;
       if (a.connected) {
-        lines.push(`<path id="${pid}" d="M${bx},${by} Q${(bx + px) / 2 + (CX - bx) * 0.1},${(by + py) / 2 + (CY - by) * 0.1} ${px},${py}" stroke="${cP}" stroke-opacity=".55" stroke-width="1.5" fill="none" class="${reduce ? '' : 'draw'}"/>`);
+        lines.push(`<path id="${pid}" d="M${bx},${by} L${px},${py}" stroke="${cP}" stroke-opacity=".55" stroke-width="1.5" fill="none" class="${reduce ? '' : 'draw'}"/>`);
         edges.push({id: pid, w: 0.35 + Math.min(1.6, v / 400), c: cP});
       } else lines.push(`<line x1="${bx}" y1="${by}" x2="${px}" y2="${py}" stroke="var(--ghost)" stroke-dasharray="3 6"/>`);
       const tipTxt = a.connected ? `<b>${p[0]}</b> ${esc(a.handle || '')}<br>${a.issue ? `<span style=&quot;color:var(--bad)&quot;>${esc(a.issue).slice(0, 120)}</span><br>` : ''}${fmt(a.followers)} followers · ${fmt(v)} views<br><span style=&quot;color:var(--muted)&quot;>Open profile ↗</span>` : `<b>${p[0]}</b><br>Not connected yet`;
