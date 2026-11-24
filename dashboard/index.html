@@ -305,7 +305,9 @@ addEventListener('keydown', e => { if (e.key === 'Escape') { if (document.getEle
 // big player for one review clip, with the decision right under it
 function openPlayer(id) {
   const r = D.review.find(x => x.edit_id === id); if (!r) return;
+  const left = D.review.filter(x => x.brand_set === r.brand_set && !x.pending).length;
   document.getElementById('pbox').innerHTML = `<button class="x" onclick="closePlayer()" aria-label="Close">×</button>
+    <div class="sub" style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em">${left} left to review</div>
     <div class="hk">${esc(r.hook)}</div>
     <video src="/video/${id}" controls autoplay playsinline></video>
     ${r.note ? `<div class="why">${esc(r.note)}</div>` : ''}
@@ -313,13 +315,23 @@ function openPlayer(id) {
       : `<div class="btns"><button class="ok" onclick="decide(${id},'approve',this)">Approve</button><button onclick="askWhy(${id},this,true)">Reject</button></div>`}`;
   document.getElementById('player').classList.add('open');
 }
+// after a decision in the player, go straight to the next clip in the same brand set's queue
+function nextClip(doneId) {
+  const cur = D.review.find(r => r.edit_id === doneId), queue = D.review.filter(r => !cur || r.brand_set === cur.brand_set);
+  const i = queue.findIndex(r => r.edit_id === doneId), rest = queue.filter(r => r.edit_id !== doneId && !r.pending);
+  const next = rest.find((r, k) => queue.indexOf(r) > i) || rest[0];
+  D.review = D.review.filter(r => r.edit_id !== doneId);
+  if (sheetFor && !document.querySelector('.whyf')) sheetFor();
+  next ? openPlayer(next.edit_id) : closePlayer();
+  load();
+}
 function closePlayer() { const p = document.getElementById('player'), v = p.querySelector('video'); v && v.pause(); p.classList.remove('open'); document.getElementById('pbox').innerHTML = ''; }
 async function decide(id, action, btn) {
   btn.parentElement.querySelectorAll('button').forEach(b => b.disabled = true);
   const r = await send(id, action);
   if (r.error) { alert(r.error); btn.parentElement.querySelectorAll('button').forEach(b => b.disabled = false); return; }
   btn.parentElement.outerHTML = `<div class="done" style="font-size:14px;text-align:center">${action === 'approve' ? 'Approved ✓' : 'Rejected'}</div>`;
-  setTimeout(() => { closePlayer(); load(); }, 700);
+  setTimeout(() => nextClip(id), 700);
 }
 
 function showSet(id, tab = 'overview') {
@@ -397,7 +409,7 @@ async function sendWhy(id, btn, inPlayer) {
   const r = await send(id, 'reject', reason);
   if (r.error) { alert(r.error); f.querySelectorAll('button,textarea').forEach(b => b.disabled = false); return; }
   f.outerHTML = `<div class="done"${inPlayer ? ' style="font-size:14px;text-align:center"' : ''}>Rejected · reason saved</div>`;
-  setTimeout(() => { if (inPlayer) closePlayer(); load(); }, inPlayer ? 900 : 1200);
+  setTimeout(() => { if (inPlayer) nextClip(id); else load(); }, inPlayer ? 900 : 1200);
 }
 
 let tk = 0, tkTimer = null, tkLines = [];
