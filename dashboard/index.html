@@ -90,6 +90,10 @@ body { margin: 0; background: radial-gradient(ellipse at 54% 50%, var(--bg-2), v
 .btns { display: flex; gap: 6px; margin-top: 8px; }
 .btns button { font: inherit; font-size: 12px; padding: 5px 11px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg-2); color: var(--text); cursor: pointer; }
 .btns button.ok { background: var(--text); color: var(--bg); border-color: var(--text); }
+.tabs { display: flex; gap: 4px; background: var(--bg-2); border-radius: 10px; padding: 3px; margin: 14px 0 6px; }
+.tabs button { flex: 1; font: inherit; font-size: 13px; border: 0; background: none; color: var(--text-2); padding: 7px; border-radius: 8px; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 6px; }
+.tabs button.on { background: var(--panel); color: var(--text); box-shadow: 0 1px 3px rgba(0,0,0,.25); }
+.tabs .n { background: var(--flag); color: #111; font-weight: 700; border-radius: 999px; padding: 0 7px; font-size: 11px; }
 .done { font-size: 12px; color: var(--text-2); margin-top: 8px; }
 @media (max-width: 720px) {
   .stats { gap: 14px; } .stat b { font-size: 16px; } .brand .t { display: none; }
@@ -103,7 +107,6 @@ body { margin: 0; background: radial-gradient(ellipse at 54% 50%, var(--bg-2), v
 <div class="top">
   <div class="brand"><span class="beat" id="beat"></span><span class="t">AI Editor Network</span></div>
   <div class="stats" id="stats"></div>
-  <button class="rbtn" onclick="openReview()">Review <span class="n" id="rcount">0</span></button>
 </div>
 <div id="stage"></div>
 <div class="ticker" id="ticker"></div>
@@ -147,7 +150,6 @@ function top_() {
   const el = document.getElementById('stats');
   if (!el.children.length) el.innerHTML = tiles.map(([l]) => `<div class="stat"><b data-v="0">0</b><span>${l}</span></div>`).join('');
   [...el.children].forEach((c, i) => countTo(c.querySelector('b'), tiles[i][1]));
-  document.getElementById('rcount').textContent = D.review.length;
 }
 
 function countTo(el, to) {
@@ -175,25 +177,26 @@ function draw() {
     lines.push(`<path id="${id}" d="M${CX},${CY} L${x},${y}" stroke="${c}" stroke-opacity=".45" stroke-width="1.5" fill="none" class="${reduce ? '' : 'draw'}"/>`);
     edges.push({id, w: 0.3, c});
     const circ = 2 * Math.PI * 44, buf = Math.min(1, sched / 3);
-    g += `<g class="node grow" tabindex="0" role="button" aria-label="Editor ${pad(i)}, ${esc(b.name)}" onclick="toggle('${b.id}')" onkeydown="if(event.key==='Enter')toggle('${b.id}')"
+    g += `<g class="node grow" tabindex="0" role="button" aria-label="Editor ${pad(i)}" onclick="toggle('${b.id}')" onkeydown="if(event.key==='Enter')toggle('${b.id}')"
         onmousemove="tipShow(event,'<b>Editor ${pad(i)}</b><br>${sched} scheduled · ${rev} in review<br><span style=&quot;color:var(--muted)&quot;>Tap to ${open.has(b.id) ? 'fold' : 'open'}</span>')" onmouseleave="tipHide()" style="color:${c}">
       <circle cx="${x}" cy="${y}" r="74" fill="url(#halo)" class="${b.enabled ? 'breathe' : ''}"/>
       <circle cx="${x}" cy="${y}" r="38" fill="var(--node)" stroke="${c}" stroke-width="2" class="ring"/>
       <circle cx="${x}" cy="${y}" r="45" fill="none" stroke="var(--line)" stroke-width="3"/>
       <circle cx="${x}" cy="${y}" r="45" fill="none" stroke="${c}" stroke-width="3" stroke-linecap="round" stroke-dasharray="${circ * buf} ${circ}" transform="rotate(-90 ${x} ${y})"/>
       <text class="lbl" x="${x}" y="${y - 2}" font-size="12">Editor</text><text class="lbl" x="${x}" y="${y + 16}" font-size="18">${pad(i)}</text>
-      ${rev ? `<g onclick="event.stopPropagation();openReview('${b.id}')"><circle cx="${x + 32}" cy="${y - 32}" r="12" fill="var(--flag)"/><text x="${x + 32}" y="${y - 28}" text-anchor="middle" font-size="11" font-weight="700" fill="#111">${rev}</text></g>` : ''}
+      ${rev && !open.has(b.id) ? `<g onclick="event.stopPropagation();showSet('${b.id}','review')"><circle cx="${x + 32}" cy="${y - 32}" r="12" fill="var(--flag)"/><text x="${x + 32}" y="${y - 28}" text-anchor="middle" font-size="11" font-weight="700" fill="#111">${rev}</text></g>` : ''}
     </g>`;
     if (!open.has(b.id)) continue;
     // the editor's brand set
     const [bx, by] = pol(355, ang), S = 116, bid = `b${i}`;
     lines.push(`<path id="${bid}" d="M${x},${y} L${bx},${by}" stroke="${c}" stroke-opacity=".6" stroke-width="2" fill="none" class="${reduce ? '' : 'draw'}"/>`);
     edges.push({id: bid, w: 0.7, c});
-    g += `<g class="node grow" tabindex="0" role="button" aria-label="${esc(b.name)} details" onclick="showSet('${b.id}')" onkeydown="if(event.key==='Enter')showSet('${b.id}')"
-        onmousemove="tipShow(event,'<b>${esc(b.name)}</b><br>Tap for details')" onmouseleave="tipHide()" style="color:${c};animation-delay:.1s">
+    g += `<g class="node grow" tabindex="0" role="button" aria-label="Editor ${pad(i)} brand set" onclick="showSet('${b.id}')" onkeydown="if(event.key==='Enter')showSet('${b.id}')"
+        onmousemove="tipShow(event,'<b>Brand set</b> · Editor ${pad(i)}<br>Tap for stats and review')" onmouseleave="tipHide()" style="color:${c};animation-delay:.1s">
       <rect x="${bx - S / 2 - 22}" y="${by - S / 2 - 22}" width="${S + 44}" height="${S + 44}" rx="40" fill="url(#halo)" class="breathe"/>
       <rect x="${bx - S / 2}" y="${by - S / 2}" width="${S}" height="${S}" rx="18" fill="var(--node)" stroke="${c}" stroke-width="2" class="ring"/>
-      ${wrap(b.name, 13).map((l, k, a) => `<text class="lbl" x="${bx}" y="${by - 20 + k * 15 - (a.length - 1) * 8}" font-size="13">${esc(l)}</text>`).join('')}
+      <text class="sub" x="${bx}" y="${by - 22}" font-size="10" letter-spacing=".1em">BRAND SET</text>
+      ${rev ? `<g onclick="event.stopPropagation();showSet('${b.id}','review')"><circle cx="${bx + S / 2 - 4}" cy="${by - S / 2 + 4}" r="13" fill="var(--flag)"/><text x="${bx + S / 2 - 4}" y="${by - S / 2 + 8}" text-anchor="middle" font-size="11" font-weight="700" fill="#111">${rev}</text></g>` : ''}
       <text class="lbl" x="${bx}" y="${by + 24}" font-size="26">${fmt(b.totals.views)}</text>
       <text class="sub" x="${bx}" y="${by + 42}" font-size="10" letter-spacing=".08em">VIEWS</text>
     </g>`;
@@ -268,19 +271,24 @@ function sheet(html, again) { document.getElementById('sheetBody').innerHTML = h
 function closeSheet() { document.getElementById('sheet').classList.remove('open'); sheetFor = null; }
 addEventListener('keydown', e => { if (e.key === 'Escape') closeSheet(); });
 
-function showSet(id) {
+function showSet(id, tab = 'overview') {
   const i = D.brand_sets.findIndex(b => b.id === id), b = D.brand_sets[i]; if (!b) return;
+  const queue = D.review.filter(r => r.brand_set === id);
+  const head = `<h3><span style="width:10px;height:10px;border-radius:3px;background:${color(i)};display:inline-block;flex:none"></span>Editor ${pad(i)} · Brand set</h3>
+    <div class="tabs"><button class="${tab === 'overview' ? 'on' : ''}" onclick="showSet('${id}','overview')">Overview</button>
+      <button class="${tab === 'review' ? 'on' : ''}" onclick="showSet('${id}','review')">Review ${queue.length ? `<span class="n">${queue.length}</span>` : ''}</button></div>`;
+  if (tab === 'review') return sheet(head + reviewList(queue), () => showSet(id, 'review'));
   const t = b.totals, c = b.counts, posts = D.posts.filter(p => p.brand_set === id && p.platforms.some(x => x.status !== 'removed')).slice(0, 8);
   const accts = b.accounts.filter(a => a.connected).map(a => { const p = PF[a.platform], h = (a.handle || '').replace(/^@/, '');
     return `<a href="${p[2](h)}" target="_blank" rel="noopener"><span class="h">${p[0]} ${esc(a.handle)}</span><span class="v">${fmt(a.followers)} followers ↗</span></a>`; }).join('');
-  sheet(`<h3><span style="width:10px;height:10px;border-radius:3px;background:${color(i)};display:inline-block;flex:none"></span>${esc(b.name)}</h3>
-    <div class="chips"><span class="chip">Editor ${pad(i)}</span><span class="chip">${esc(b.format)}</span><span class="chip">${esc(b.look.captions.replace(/ \d+px/, ''))}</span>${b.theme && !/not set/i.test(b.theme) ? `<span class="chip">${esc(b.theme)}</span>` : ''}</div>
+  sheet(head + `
+    <div class="chips"><span class="chip">${esc(b.format)}</span><span class="chip">${esc(b.look.captions.replace(/ \d+px/, ''))}</span>${b.theme && !/not set/i.test(b.theme) ? `<span class="chip">${esc(b.theme)}</span>` : ''}</div>
     <div class="nums"><div><b>${fmt(t.views)}</b><span>views</span></div><div><b>${t.posts}</b><span>posted</span></div><div><b>${t.posts ? fmt(Math.round(t.views / t.posts)) : '–'}</b><span>per clip</span></div>
       <div><b>${c.queued + c.approved}</b><span>scheduled</span></div><div><b>${c.ready + c.qa_failed}</b><span>in review</span></div><div><b>${c.excluded}</b><span>filtered</span></div></div>
     ${b.next_post ? `<div class="sec">Next · ${when(b.next_post.slot)}</div><div style="margin-top:6px">${esc(b.next_post.hook)}</div>` : ''}
     <div class="sec">Accounts</div><div class="plist">${accts || '<div class="p">None connected</div>'}</div>
     <div class="sec">Recent</div><div class="plist">${posts.map(p => { const v = p.platforms.reduce((a, x) => a + (x.views || 0), 0), u = (p.platforms.find(x => x.url) || {}).url;
-      return u ? `<a href="${esc(u)}" target="_blank" rel="noopener"><span class="h">${esc(p.hook)}</span><span class="v">${fmt(v)}</span></a>` : `<div class="p"><span class="h">${esc(p.hook)}</span><span class="v">${fmt(v)}</span></div>`; }).join('') || '<div class="p">Nothing yet</div>'}</div>`, () => showSet(id));
+      return u ? `<a href="${esc(u)}" target="_blank" rel="noopener"><span class="h">${esc(p.hook)}</span><span class="v">${fmt(v)}</span></a>` : `<div class="p"><span class="h">${esc(p.hook)}</span><span class="v">${fmt(v)}</span></div>`; }).join('') || '<div class="p">Nothing yet</div>'}</div>`, () => showSet(id, 'overview'));
 }
 
 function showCos() {
@@ -288,14 +296,12 @@ function showCos() {
     <div style="color:var(--text-2)">One agent over every editor. Tell it what to change (“Editor 01, switch fonts”) and it makes the change, checks quality, and keeps brand sets distinct.</div>`, null);
 }
 
-function openReview(only) {
-  const list = D.review.filter(r => !only || r.brand_set === only);
-  sheet(`<h3>Review <span class="chip">${list.length}</span></h3>
-    ${list.map(r => `<div class="rv" id="rv${r.edit_id}">
+function reviewList(list) {
+  return `${list.map(r => `<div class="rv" id="rv${r.edit_id}">
       ${r.has_video ? `<video src="/video/${r.edit_id}#t=0.5" preload="metadata" playsinline onclick="this.paused?this.play():this.pause()"></video>` : '<div></div>'}
       <div><div class="hk">${esc(r.hook)}</div><div class="why" title="${esc(r.note)}">${esc(r.note || 'Needs a look')}</div>
       ${r.pending ? `<div class="done">${r.pending === 'approve' ? 'Approved' : 'Rejected'} · syncing</div>` : `<div class="btns"><button class="ok" onclick="act(${r.edit_id},'approve',this)">Approve</button><button onclick="act(${r.edit_id},'reject',this)">Reject</button></div>`}</div>
-    </div>`).join('') || '<div style="color:var(--text-2);margin-top:12px">All clear.</div>'}`, null);
+    </div>`).join('') || '<div style="color:var(--text-2);margin-top:12px">All clear.</div>'}`;
 }
 
 async function act(id, action, btn) {
