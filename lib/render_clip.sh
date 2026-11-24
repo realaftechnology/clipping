@@ -15,8 +15,11 @@ import glob;lc=glob.glob(os.path.expanduser('~/Movies/AI Editors/cache/$id.*'));
 cr=json.loads(cr) if cr!='null' else None
 print(p.replace(' ','\x01'),cr['x'] if cr else -1,cr['w'] if cr else -1,d,f)")
 src=${src//$'\x01'/ }
+# tightened version from lib/trim.py (the editor's trim plan): its own video+voice, length and re-timed words
+WORDS="$WORK/prep/$id/words.json"
+if [[ -n $TRIM_SRC ]]; then src=$TRIM_SRC; dur=$TRIM_DUR; WORDS=$TRIM_WORDS; fi
 job=$WORK/render/$id; rm -rf "$job"; mkdir -p "$job"
-python3 "$HERE/captions.py" "$WORK/prep/$id/words.json" "$job/overlay.html" --font "$(sty caption_font)" --size $(sty caption_size) --y $(sty caption_y) --active "$(sty caption_active)" $([[ $(sty caption_animate) == True ]] && echo --animate) >/dev/null
+python3 "$HERE/captions.py" "$WORDS" "$job/overlay.html" --font "$(sty caption_font)" --size $(sty caption_size) --y $(sty caption_y) --active "$(sty caption_active)" $([[ $(sty caption_animate) == True ]] && echo --animate) >/dev/null
 # hook title: native TikTok/Instagram-style text box (sentence case, as typed), static, inside the captions page
 python3 - "$job/overlay.html" "$hook" "$(sty hook_font)" $(sty hook_size) $(sty hook_top) "$(sty hook_bg)" "$(sty hook_color)" <<'PY'
 import sys,html;p,h,font,size,top,bg,fg=sys.argv[1:];s=open(p).read()

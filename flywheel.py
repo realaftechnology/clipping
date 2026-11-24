@@ -231,7 +231,7 @@ def music_start(fname):
 DECISION_SCHEMA = {
     'type': 'object', 'additionalProperties': False,
     'required': ['excluded', 'exclusion_reason', 'usable', 'skip_reason', 'topical', 'opening_raises_question', 'hook', 'alt_hooks', 'mood', 'song',
-                 'post_caption', 'hashtags', 'risk_flags', 'caption_fixes', 'profile_verdict', 'profile_basis'],
+                 'post_caption', 'hashtags', 'risk_flags', 'caption_fixes', 'profile_verdict', 'profile_basis', 'trim'],
     'properties': {
         'excluded': {'type': 'boolean', 'description': 'hits a hard exclusion; checked before anything else'},
         'exclusion_reason': {'type': 'string'},
@@ -246,6 +246,10 @@ DECISION_SCHEMA = {
         'profile_verdict': {'type': 'string', 'enum': ['approve', 'reject', 'unclear'],
                             'description': 'what the content profile says Matt would do with this clip'},
         'profile_basis': {'type': 'string'},
+        'trim': {'type': 'object', 'additionalProperties': False, 'required': ['start', 'end', 'remove', 'summary'], 'properties': {
+            'start': {'type': 'integer'}, 'end': {'type': 'integer'}, 'summary': {'type': 'string'},
+            'remove': {'type': 'array', 'items': {'type': 'object', 'additionalProperties': False, 'required': ['from', 'to', 'why'],
+                                                  'properties': {'from': {'type': 'integer'}, 'to': {'type': 'integer'}, 'why': {'type': 'string'}}}}}},
         'caption_fixes': {'type': 'array', 'description': 'corrections to the on-screen caption words',
                           'items': {'type': 'object', 'additionalProperties': False, 'required': ['index', 'text'],
                                     'properties': {'index': {'type': 'integer'}, 'text': {'type': 'string'}}}}}}
@@ -295,7 +299,19 @@ Also:
 - alt_hooks: 2 more hooks that follow the rules.
 - caption_fixes: the on-screen captions are these words (index:word): {caption_tokens(row['id'])}
   Fix only clear transcription mistakes (a misheard or misspelled word, a wrong name) and anything the standing rules
-  require: [{{index, text}}], text "" removes the word. Never change how Andy actually talks. [] if nothing needs fixing."""
+  require: [{{index, text}}], text "" removes the word. Never change how Andy actually talks, and don't censor swearing
+  (the captions do that automatically). [] if nothing needs fixing.
+- trim: tighten the clip using the same word indices. Matt: "No clip should start mid-sentence, but the editors are
+  permitted to trim clips as needed to remove dead space, to remove filler words, repeated words... They are not
+  permitted to cut off sentences. We want the pacing to be fluid and smooth. So if you close your eyes, it sounds like it
+  could have been said as one cohesive sentence... But they are allowed to cut where it adds to the video."
+  start: index of the first word to keep; it MUST begin a sentence (drop a half-sentence the clip opens on, or start at
+  0). end: index of the last word to keep; it MUST end a sentence (drop a trailing half-sentence). remove: word ranges
+  {{from, to, why}} to cut inside: filler (um, uh, like, you know, I mean), stutters and repeated words, false starts,
+  and whole sentences or asides that slow it down, only when what's left still reads as one natural, continuous
+  thought. Never remove part of a sentence that leaves it broken or changes its meaning. Never cut the payoff. Dead
+  air is shortened automatically; don't list pauses. summary: what you cut, in a few words. If it's already tight:
+  start 0 (or the first sentence start), end = last sentence end, remove []."""
 
 
 def ask_claude(prompt, schema=None):
@@ -392,10 +408,16 @@ def render(edit_id):
     out_dir = os.path.join(WORK, 'out', e['editor'])
     os.makedirs(out_dir, exist_ok=True)
     out = os.path.join(out_dir, f"{ep}_{ed['name']}_{row['subject'].strip()}_v{e['version']}.mp4")
-    subprocess.run([os.path.join(HERE, 'lib', 'render_clip.sh'), e['editor'], str(e['raw_id']), e['hook'], e['song'], str(e['music_start'] or 0), out],
-                   check=True, capture_output=True)
-    q = qa(out, pr['duration'])
     d = json.loads(e['decision'])
+    env, src_dur = dict(os.environ), pr['duration']
+    if d.get('trim'):
+        t = tighten(e, row, pr, d['trim'])
+        if t:
+            env.update(TRIM_SRC=t['src'], TRIM_WORDS=t['words'], TRIM_DUR=str(t['duration']))
+            src_dur = t['duration']
+    subprocess.run([os.path.join(HERE, 'lib', 'render_clip.sh'), e['editor'], str(e['raw_id']), e['hook'], e['song'], str(e['music_start'] or 0), out],
+                   check=True, capture_output=True, env=env, stdin=subprocess.DEVNULL)
+    q = qa(out, src_dur)
     safe = not d['risk_flags'] and (d['opening_raises_question'] or d.get('profile_verdict') == 'approve') and not d['topical'] and not e['note']
     # Matt, 2026-11-23: "Automated posts should be safest stuff." Anything flagged waits for a human, even with auto_post on.
     status = 'qa_failed' if q['problems'] else ('approved' if ed.get('auto_post') and safe else 'ready')
@@ -800,7 +822,8 @@ Write:
   evidence: "(seen once)" is a hunch; "(pattern: 3 wins)" is a rule. Never turn one viral post into a rule. Keep lessons
   that still hold; drop ones the data now contradicts. Never contradict Matt's written rules (hook rules, hard
   exclusions, content profile): performance can't make a rejected kind of clip acceptable. Under about 400 words.
-  Use '###' for any sub-headings (never '#' or '##').
+  Use '###' for any sub-headings (never '#' or '##'). Matt's trimming rule: a clip never starts mid-sentence or cuts a
+  sentence off (editors may trim filler, repeats and dead air); write opening lessons within that rule.
 - style: per editor, bullets only about music and look that its own results support (style is per editor and is never
   copied from another editor). Empty string when there's nothing yet.
 - spread: edit ids of clear winners (lift of 3 or more, at least 48 h old) that other editors should re-cut in their own style.
@@ -948,6 +971,46 @@ def refs_for_prompt(limit=60):
              'weight': round(max(0.5, 1 + math.log10(max(r['views'] or 1, 1) / 1e5)), 2), 'seconds': round(r['duration'] or 0),
              **{k: (v[:700] if k == 'why_it_worked' else v) for k, v in json.loads(r['analysis']).items() if k not in ('captions', 'look')}}
             for r in rows]
+
+
+# ---------- trimming (Matt, 2026-11-23) ----------
+END = re.compile(r'[.?!]["\')\]]*$')
+
+
+def snap_trim(tokens, plan):
+    """Enforce whole sentences: start on a sentence start, end on a sentence end; drop cuts outside the kept range."""
+    words = [t['text'].strip() for t in tokens]
+    n = len(words)
+    start = max(0, min(plan.get('start', 0), n - 1))
+    while start > 0 and not END.search(words[start - 1] or '.'):  # back up to the start of this sentence
+        start -= 1
+    while start < n and not words[start]:
+        start += 1
+    end = max(start, min(plan.get('end', n - 1), n - 1))
+    while end < n - 1 and not END.search(words[end] or ''):     # run on to the end of this sentence
+        end += 1
+    remove = [r for r in plan.get('remove', []) if start <= r['from'] <= r['to'] <= end]
+    return {'start': start, 'end': end, 'remove': remove}
+
+
+def tighten(e, row, pr, plan):
+    """Tightened source for one edit (lib/trim.py). Returns {'src', 'words', 'duration'} or None if untouched."""
+    words_p = os.path.join(WORK, 'prep', str(e['raw_id']), 'words.json')
+    tokens = json.load(open(words_p))['transcription']
+    p = snap_trim(tokens, plan)
+    if p['start'] == 0 and p['end'] >= len(tokens) - 1 and not p['remove'] and not plan.get('dead_air', True):
+        return None
+    work = os.path.join(WORK, 'trim', str(e['id']))
+    os.makedirs(work, exist_ok=True)
+    json.dump(p, open(os.path.join(work, 'plan.json'), 'w'))
+    src = local_copy(row)
+    crop = json.loads(pr['crop']) if pr['crop'] and pr['crop'] != 'null' else None
+    cmd = [sys.executable, os.path.join(HERE, 'lib', 'trim.py'), src, words_p, os.path.join(work, 'plan.json'), work]
+    if crop:
+        cmd += ['--crop', f"{crop['x']},{crop['w']}"]
+    r = json.loads(subprocess.run(cmd, capture_output=True, text=True, check=True, stdin=subprocess.DEVNULL).stdout.strip().splitlines()[-1])
+    log(f"edit {e['id']} trimmed {pr['duration']:.1f}s -> {r['duration']:.1f}s ({r['cuts']} cuts): {plan.get('summary', '')}")
+    return {'src': os.path.join(work, 'source.mov'), 'words': os.path.join(work, 'words.json'), 'duration': r['duration']}
 
 
 # ---------- queue / post / track ----------
