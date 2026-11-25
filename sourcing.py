@@ -304,6 +304,7 @@ segments, intros and outros, housekeeping, plugs, small talk, dead air, tangents
 - Opens as cleanly as the conversation allows (skip throat-clearing like "so anyway") and ends on its landing line,
   before the conversation drifts to the next topic.
 - Is mostly Andy's take or story. Keep the co-host's lines that belong to it.
+- A reaction moment (Andy reacting to a video, headline, post or picture) starts on what he reacts to, then his take.
 - Never overlaps another moment.
 Order them best first by how well they'd do (the playbook and high performers show what wins). confidence says how strong
 each is; a weaker moment that is still substantive and inside the guardrails still goes in, with a lower confidence.

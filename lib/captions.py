@@ -19,6 +19,22 @@ for s in json.load(open(src))['transcription']:
         w = re.sub(r'(?i)\b(sh)i(t\w*)', r'\1*\2', w)
         w = re.sub(r'(?i)\b(f)u(ck\w*)', r'\1*\2', w)
     words.append({'t': s['offsets']['from'] / 1000, 'e': s['offsets']['to'] / 1000, 'w': w.upper()})
+# names always spelled right, even in all-caps captions (from Chay's Real AF rulebook, adopted 2026-11-25):
+# Andy's company is 1stPhorm; DJ, OGs and Frisella are always written that way
+SPELL = {'FIRSTFORM': '1stPhorm', 'FIRSTPHORM': '1stPhorm', '1STPHORM': '1stPhorm', '1STFORM': '1stPhorm', 'DEEJAY': 'DJ', 'D.J.': 'DJ',
+         "OG'S": 'OGs', 'OGS': 'OGs', 'FRIZELLA': 'FRISELLA', 'FRESELLA': 'FRISELLA', 'FRISSELLA': 'FRISELLA', 'FRIZZELLA': 'FRISELLA'}
+k = 0
+while k < len(words):
+    m = re.match(r"^(.*?)([.,?!]*)$", words[k]['w'])
+    core, tail = m[1], m[2]
+    if core == 'FIRST' and k + 1 < len(words) and re.match(r'^(FORM|PHORM)', words[k + 1]['w']):
+        words[k + 1]['w'] = '1stPhorm' + re.match(r'^(?:FORM|PHORM)(.*)$', words[k + 1]['w'])[1]
+        words[k + 1]['t'] = words[k]['t']
+        del words[k]
+        continue
+    if core in SPELL:
+        words[k]['w'] = SPELL[core] + tail
+    k += 1
 groups, cur = [], []
 for w in words:
     if cur and (len(cur) == 3 or len(' '.join(x['w'] for x in cur + [w])) > 14):

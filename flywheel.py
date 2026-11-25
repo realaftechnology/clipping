@@ -261,7 +261,7 @@ DECISION_SCHEMA = {
         'opening_raises_question': {'type': 'boolean'},
         'hook': {'type': 'string'}, 'alt_hooks': {'type': 'array', 'items': {'type': 'string'}},
         'mood': {'type': 'string', 'enum': ['reflective', 'epic', 'hype', 'dark', 'warm']},
-        'song': {'type': 'string', 'description': 'exact file name from the list'},
+        'song': {'type': 'string', 'description': 'exact file name from the list, or "none" for no music'},
         'post_caption': {'type': 'string'}, 'hashtags': {'type': 'array', 'items': {'type': 'string'}},
         'risk_flags': {'type': 'array', 'items': {'type': 'string'}},
         'profile_verdict': {'type': 'string', 'enum': ['approve', 'reject', 'unclear'],
@@ -354,8 +354,11 @@ Raw clip: {os.path.basename(row['path'])} (folder {row['folder']}, {prep_row['du
 Transcript (auto, may lack punctuation):
 {q3}{prep_row['transcript']}{q3}
 
-Songs you may use (instrumentals; pick one whose mood fits; file name must match exactly):
+Songs you may use (instrumentals; pick one whose mood fits; file name must match exactly), or "none":
 {songs_txt}
+Music only when it adds to the emotion. Matt: "we have to recognize when a video is benefiting from music and when it
+adds to the emotion." Serious, emotional or intense statements and rants get music. Joking or light-hearted clips, and
+reaction clips where a played video has its own sound, get song "none" (mood still describes the clip).
 
 Also:
 - usable=false only if the clip is unusable (cut mid-thought with no payoff, mostly crosstalk, unclear audio); say why in skip_reason.
@@ -381,6 +384,21 @@ Also:
   thought. Never remove part of a sentence that leaves it broken or changes its meaning. Never cut the payoff. Dead
   air is shortened automatically; don't list pauses.
   On-screen inserts in this clip: {inserts_text(row)}
+  Clip craft (all editors; Matt's rules win wherever they differ):
+  - It has to work for a stranger who has never seen Andy, this episode or this topic. One clip, one topic.
+  - Setup before answer: the question or situation first, then Andy's point, then the payoff. Let the setup play long
+    enough for the payoff to make sense; context beats being short.
+  - Open on the strongest whole sentence: cut throat-clearing in front of it ("I know this. I know that...", "My main
+    question..."). If the opening sentence only announces an example ("I'll use the example of a restaurant"), start
+    where the claim itself starts. A clear question (DJ, a caller, a submitted question) is a good opener.
+  - The first line never leans on something the viewer didn't hear: no opening "that", "this", "he", "they" pointing
+    back, and no opening on a link word ("and", "but", "because") or filler.
+  - End on a whole sentence that lands the point. Never end on a setup left hanging, a listener's question or filler
+    ("you know", "right?"). The ending must never change what Andy meant.
+  - Say it once: an exact repeat ("so so", "if you... if you") or a near repeat in other words ("I'd take that a step
+    further" twice) keeps one copy. Two sentences that merely share a word are not a repeat. Cut asides and connector
+    phrases that stall a line ("we're getting off track here", "Okay. So").
+  - Reaction clips (Andy reacting to a video, headline or picture): open on what he reacts to, then his take.
   Matt, after a clip went out with the video Andy reacted to cut: "you can't remove context like that." If any line you
   keep refers to or reacts to an insert ("play this", "look at that", laughing at it), keep the insert's words too: it is
   shown in the finished clip, cropped to fill the frame like every other shot. Only cut an insert when nothing you keep depends on it. If the clip can't work
@@ -429,10 +447,12 @@ def decide(raw_id, eid, manual=None):
     if d['excluded']:
         d['usable'] = False
         c.execute('INSERT OR REPLACE INTO blocked VALUES(?,?,?)', (raw_id, 'excluded: ' + d.get('exclusion_reason', ''), time.time()))
-    if d['usable'] and d['song'] not in {r['file'] for r in pool}:
+    if d['usable'] and d['song'] != 'none' and d['song'] not in {r['file'] for r in pool}:
         d['song'] = next(r['file'] for r in pool if r['mood'] == d['mood'])  # model named a song not on the list
     mstart = None
-    if d['usable']:
+    if d['usable'] and d['song'] == 'none':
+        mstart = 0.0
+    elif d['usable']:
         for alt in [d['song']] + [r['file'] for r in pool if r['mood'] == d['mood'] and r['file'] != d['song']]:
             try:
                 mstart, d['song'] = music_start(alt), alt
@@ -490,6 +510,10 @@ def render(edit_id, retried=False):
     os.makedirs(out_dir, exist_ok=True)
     out = os.path.join(out_dir, f"{ep}_{ed['name']}_{row['subject'].strip()}_v{e['version']}.mp4")
     d = json.loads(e['decision'])
+    if shutil.disk_usage(WORK).free < 15e9:  # Chay's rulebook: renders stop under 15 GB free; free space first
+        offload()
+        if shutil.disk_usage(WORK).free < 15e9:
+            raise RuntimeError(f'only {shutil.disk_usage(WORK).free / 1e9:.0f} GB free; not rendering until there is 15 GB')
     env, src_dur = dict(os.environ, AI_EDITORS_WORK=WORK), pr['duration']  # render_clip.sh uses this machine's work_dir
     t = None
     if d.get('trim'):
@@ -499,9 +523,20 @@ def render(edit_id, retried=False):
             if t['vertical']:
                 env['TRIM_VERTICAL'] = '1'
             src_dur = t['duration']
-    subprocess.run([os.path.join(HERE, 'lib', 'render_clip.sh'), e['editor'], str(e['raw_id']), e['hook'], e['song'], str(e['music_start'] or 0), out],
+    mstart = e['music_start'] or 0
+    if e['song'] and e['song'] != 'none':  # the song must run the whole clip from where it starts, never stop early
+        slen = probe_audio(os.path.join(os.path.expanduser(CFG['music_dir']), e['song']))
+        if slen - mstart < src_dur + 0.5:
+            mstart = max(0.0, slen - src_dur - 0.5)
+    subprocess.run([os.path.join(HERE, 'lib', 'render_clip.sh'), e['editor'], str(e['raw_id']), e['hook'], e['song'] or 'none', str(mstart), out],
                    check=True, capture_output=True, env=env, stdin=subprocess.DEVNULL)
     q = qa(out, src_dur)
+    if e['song'] and e['song'] != 'none' and probe_audio(os.path.join(os.path.expanduser(CFG['music_dir']), e['song'])) < src_dur:
+        q['problems'].append('song is shorter than the clip')
+    fl = json.loads(subprocess.run([sys.executable, os.path.join(HERE, 'lib', 'flash.py'), out], capture_output=True, text=True,
+                                   check=True, stdin=subprocess.DEVNULL).stdout)
+    if fl:  # Chay: no flash frames (two picture changes within 3 frames)
+        q['problems'].append('flash frame at ' + ', '.join(f'{x}s' for x in fl))
     if t and t.get('replays'):  # never post a clip with a skip in it
         q['problems'].append('a moment plays twice at ' + ', '.join(f'{x[0]}s' for x in t['replays']))
     c.execute('UPDATE edits SET path=?, qa=?, updated=? WHERE id=?', (out, json.dumps(q), time.time(), edit_id))
@@ -513,6 +548,10 @@ def render(edit_id, retried=False):
             sc = sense_check(edit_id)
         except Exception as ex:
             sc = {'works': False, 'problems': [f'context check could not run: {ex}'], 'fix': ''}
+        pc = [] if retried else paper_check(edit_id)  # script flags only prompt the one re-cut; they never hold a clip by themselves
+        if pc:
+            sc['works'] = False
+            sc['problems'] = sc['problems'] + ['script check (fix if real, ignore if intentional emphasis): ' + x for x in pc]
         if not sc['works'] and not retried and d.get('trim'):
             log(f"edit {edit_id} context check failed, re-cutting: {'; '.join(sc['problems'])[:200]}")
             try:
@@ -667,7 +706,7 @@ The rejected clip:
    happen again. For "scrap", which clips to skip; for "edit", what to do differently. Keep it exactly as broad as his
    reason: don't add requirements he didn't state.
 4. rejected: for "edit", the fix for this clip: applies=true and set only what changes (hook: new hook text or "";
-   song: a file name from the song list or ""; caption_fixes: [{{index, text}}] to correct caption words, text "" deletes
+   song: a file name from the song list, "none" to remove the music, or "" to keep it; caption_fixes: [{{index, text}}] to correct caption words, text "" deletes
    the word; what_changed: short plain description). Change only what his reason covers; never rewrite how Andy talks
    ("gonna", "ya know" etc. stay unless he said otherwise). If the problem isn't actually in this clip, applies=false
    and say so. If the fix needs something these tools can't change (crop, trim,
@@ -695,7 +734,10 @@ def reedit(e, ch, why):
     hook, song, mstart = e['hook'], e['song'], e['music_start']
     if ch.get('hook'):
         hook = d['hook'] = ch['hook']
-    if ch.get('song') and ch['song'] in {r['file'] for r in songs()} and ch['song'] != e['song']:
+    if ch.get('song') == 'none':
+        mstart, song = 0.0, 'none'
+        d['song'] = song
+    elif ch.get('song') and ch['song'] in {r['file'] for r in songs()} and ch['song'] != e['song']:
         try:
             mstart, song = music_start(ch['song']), ch['song']
             d['song'] = song
@@ -1201,6 +1243,63 @@ def tighten(e, row, pr, plan):
             'vertical': r.get('vertical', False), 'replays': rp}
 
 
+# ---------- the paper check (from Chay's Real AF rulebook, adopted 2026-11-25) ----------
+# Reads the words the finished clip says and flags what a script can see for sure: an opening on a link or filler word,
+# an ending on filler, a word or phrase said twice in a row, a sentence said twice. Feeds the same one re-cut as the
+# context check.
+LINK_START = {'and', 'but', 'because', 'or', 'um', 'uh', 'like', 'yeah', 'okay', 'ok', 'anyway', 'also', 'plus'}
+FILLER_END = [('you', 'know'), ('right',), ('yeah',), ('okay',), ('like',), ('um',), ('uh',), ('i', 'mean')]
+EMPHASIS = {'no', 'very', 'really', 'so', 'never', 'that', 'had', 'go', 'yeah', 'fucking', 'more', 'over', 'again', 'bye'}
+
+
+def paper_check(edit_id):
+    tw = os.path.join(WORK, 'trim', str(edit_id), 'words.json')
+    if not os.path.exists(tw):
+        return []
+    raw = [t['text'].strip() for t in json.load(open(tw))['transcription'] if t['text'].strip()]
+    w = [re.sub(r"[^\w']", '', x.lower()) for x in raw]
+    w = [x for x in w if x]
+    if not w:
+        return []
+    out = []
+    if w[0] in LINK_START:
+        out.append(f'opens on "{w[0]}" (a link or filler word): start on the sentence\'s real first word or the next whole sentence')
+    for f in FILLER_END:
+        if tuple(w[-len(f):]) == f:
+            out.append(f'ends on filler "{" ".join(f)}": end on the sentence that lands the point')
+            break
+    for n in (1, 2, 3):  # exact repeat of 1-3 words in a row ("is is", "if you if you")
+        for i in range(len(w) - 2 * n + 1):
+            if w[i:i + n] != w[i + n:i + 2 * n] or (n == 1 and w[i] in EMPHASIS):
+                continue
+            lo, hi = i, i  # span over which the words repeat with period n: 3+ copies is rhetoric ("up and down, up and down...")
+            while lo > 0 and w[lo - 1] == w[lo - 1 + n]:
+                lo -= 1
+            while hi + 2 * n < len(w) and w[hi + 1] == w[hi + 1 + n]:
+                hi += 1
+            if hi - lo + 1 > n:
+                continue
+            seg = ' '.join(raw[i:i + 2 * n])
+            if re.search(r'[.?!]', ' '.join(raw[i:i + 2 * n - 1])):  # a sentence ends inside: two sentences sharing words
+                continue
+            if n == 1 and len(w[i]) > 2 and raw[i].endswith(','):  # "worth your while, while that..." is grammar, not a stutter
+                continue
+            out.append(f'says "{" ".join(w[i:i + n])}" twice in a row (keep one): "...{" ".join(raw[max(0, i - 3):i + 2 * n + 3])}..."')
+    grams = {}
+    for i in range(len(w) - 7):  # the same 8 words twice = a sentence said twice
+        g = tuple(w[i:i + 8])
+        if g in grams and i - grams[g] >= 8:
+            out.append(f'says the same thing twice: "{" ".join(g)}..."')
+            break
+        grams.setdefault(g, i)
+    return out[:6]
+
+
+def probe_audio(path):
+    return float(subprocess.run(['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', path],
+                                capture_output=True, text=True, check=True).stdout.strip())
+
+
 # ---------- does the finished clip still make sense? (Matt, 2026-11-24) ----------
 # "you can't remove context like that. And you got to check, like, does the video still work and make sense after
 # the edit?" (after an edit cut the video Andy was reacting to, so the posted clip had zero context)
@@ -1221,9 +1320,10 @@ def sense_check(edit_id):
     os.makedirs(work, exist_ok=True)
     dur = probe(e['path'])[3]
     frames = []
-    for k in range(8):
+    for k in range(9):  # 8 evenly spaced, plus the very last frame (out8)
         fp = f'{work}/out{k}.jpg'
-        subprocess.run(['ffmpeg', '-v', 'error', '-y', '-ss', f'{dur * (k + 0.5) / 8:.2f}', '-i', e['path'], '-frames:v', '1', '-vf', 'scale=360:-2', fp],
+        at = dur * (k + 0.5) / 8 if k < 8 else max(0, dur - 0.1)
+        subprocess.run(['ffmpeg', '-v', 'error', '-y', '-ss', f'{at:.2f}', '-i', e['path'], '-frames:v', '1', '-vf', 'scale=360:-2', fp],
                        check=True, stdin=subprocess.DEVNULL)
         frames.append(os.path.basename(fp))
     row = c.execute('SELECT * FROM raw_clips WHERE id=?', (e['raw_id'],)).fetchone()
@@ -1238,7 +1338,7 @@ def sense_check(edit_id):
 "the video that he reacted to was not included. So there's zero context... you can't remove context like that. And you
 got to check, like, does the video still work and make sense after the edit?"
 
-Read the frames in this folder: out0-out7.jpg are the FINISHED clip (evenly spaced), raw0-raw7.jpg the raw clip it was
+Read the frames in this folder: out0-out7.jpg are the FINISHED clip (evenly spaced), out8.jpg its last frame, raw0-raw7.jpg the raw clip it was
 cut from. Then judge the finished clip as a viewer who has seen nothing else.
 
 On-screen hook: "{e['hook']}"
@@ -1253,7 +1353,12 @@ works=false if ANY of these is true:
 - Andy reacts to or answers something that isn't in the clip;
 - a line depends on setup that was cut, or the point no longer follows;
 - it starts mid-sentence or stops before the thought finishes;
-- the hook promises something the clip doesn't deliver.
+- the hook promises something the clip doesn't deliver;
+- the first sentence doesn't make sense to someone who saw nothing else (an opening "he", "they", "that" pointing at
+  something never named, or an opening that only announces an example);
+- in order, the sentences don't make one complete thought (setup, point, landing), or the last sentence doesn't land
+  the point (it ends on a setup, a listener's question or filler), or the ending changes what Andy meant;
+- the last frame (out8) is on a listener reacting rather than the person making the point.
 Swearing, bluntness and opinions are fine. problems: each issue, specific. fix: how to re-cut it (what to keep, and
 whether visual context must be shown), or "" if it works."""
     cmd = ['claude', '-p', prompt, '--output-format', 'json', '--tools', 'Read', '--allowedTools', 'Read', '--no-session-persistence',
@@ -1279,7 +1384,9 @@ On-screen inserts: {inserts_text(row)}
 
 Rules (Matt): never start mid-sentence or cut a sentence off; cut only filler, repeats, false starts and asides when
 what's left is one natural, continuous thought; never remove context the clip depends on (keep any insert that kept
-lines react to; it fills the frame like every other shot). Return trim: start (a sentence start), end (a sentence end), remove ranges with
+lines react to; it fills the frame like every other shot). Open on the strongest whole sentence, never on a link word
+("and", "but", "because"), filler, or a pronoun pointing at something not heard; end on a whole sentence that lands the
+point; keep one copy of any repeat. Return trim: start (a sentence start), end (a sentence end), remove ranges with
 why, summary."""
     return ask_claude(prompt, schema)['trim']
 

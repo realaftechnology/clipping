@@ -38,10 +38,16 @@ PY
 frames=$(python3 -c "print(int($dur*$fps))")
 node "$HERE/render.mjs" "$job/overlay.html" "$job" --frames $frames --fps $fps --step 2 --size 1080x1920 >/dev/null
 if [[ $cx -ge 0 ]]; then vf="crop=${cw}:ih:${cx}:0,scale=1080:1920:flags=lanczos,setsar=1"; else vf="scale=1080:1920,setsar=1"; fi
-ffmpeg -v error -y -i "$src" -f concat -safe 0 -i "$job/overlay.ffconcat" -ss $mstart -i "$MUSIC" -filter_complex \
- "[0:v]${vf}[b];[1:v]scale=in_range=pc:out_range=tv:out_color_matrix=bt709,format=yuva420p[o];[b][o]overlay=0:0:format=yuv420:eof_action=repeat[v];\
-[0:a]loudnorm=I=-14:TP=-1.5:LRA=11[va];[2:a]atrim=0:${dur},asetpts=N/SR/TB,loudnorm=I=-27:TP=-3,afade=t=in:d=1,afade=t=out:st=$((dur-1.5)):d=1.5[ma];\
-[va][ma]amix=inputs=2:duration=first:normalize=0,alimiter=limit=0.89,aresample=48000[a]" \
+# song "none": no music bed, the voice alone (Matt, 2026-11-24: "this video doesn't need music")
+VIDF="[0:v]${vf}[b];[1:v]scale=in_range=pc:out_range=tv:out_color_matrix=bt709,format=yuva420p[o];[b][o]overlay=0:0:format=yuv420:eof_action=repeat[v]"
+if [[ $song == none ]]; then
+  MIN=(); AF="[0:a]loudnorm=I=-14:TP=-1.5:LRA=11,alimiter=limit=0.89,aresample=48000[a]"
+else
+  MIN=(-ss $mstart -i "$MUSIC")
+  AF="[0:a]loudnorm=I=-14:TP=-1.5:LRA=11[va];[2:a]atrim=0:${dur},asetpts=N/SR/TB,loudnorm=I=-27:TP=-3,afade=t=in:d=1,afade=t=out:st=$((dur-1.5)):d=1.5[ma];\
+[va][ma]amix=inputs=2:duration=first:normalize=0,alimiter=limit=0.89,aresample=48000[a]"
+fi
+ffmpeg -v error -y -i "$src" -f concat -safe 0 -i "$job/overlay.ffconcat" "${MIN[@]}" -filter_complex "${VIDF};${AF}" \
  -map "[v]" -map "[a]" -frames:v $frames -c:v libx264 -crf 20 -preset medium -pix_fmt yuv420p \
  -color_primaries bt709 -color_trc bt709 -colorspace bt709 -c:a aac -b:a 192k -movflags +faststart "$out"
 echo "$out"

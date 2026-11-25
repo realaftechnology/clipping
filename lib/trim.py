@@ -17,7 +17,7 @@ How cuts stay smooth:
 - Where a cut removes more than ~0.6 s, the framing switches between normal and a 7% punch-in around the speaker, so
   the jump reads as a deliberate camera change; small pause trims keep the same framing so it doesn't flicker.
 """
-import json, os, statistics, subprocess, sys, tempfile
+import json, os, re, statistics, subprocess, sys, tempfile
 import numpy as np
 
 src, words_p, plan_p, out = sys.argv[1:5]
@@ -27,6 +27,23 @@ in_insert = lambda t: any(x['start'] - 0.2 <= t <= x['end'] + 0.2 for x in inser
 if '--crop' in sys.argv:
     cx, cw = map(int, sys.argv[sys.argv.index('--crop') + 1].split(','))
     crop = (cx, cw)
+
+
+def camera_cuts():
+    """Times (s) where the show's own feed cuts between cameras."""
+    r = subprocess.run(['ffmpeg', '-v', 'info', '-i', src, '-an', '-vf', "scale=160:-2,select='gt(scene,0.35)',showinfo", '-f', 'null', '-'],
+                       capture_output=True, text=True, stdin=subprocess.DEVNULL)
+    return [float(m) for m in re.findall(r'pts_time:([\d.]+)', r.stderr)]
+
+
+CUTS = camera_cuts()
+# inserts.py samples every 0.5 s, so its edges can be up to half a second off: move each edge onto the show's real camera
+# cut, so the framing changes on the same frame as the picture (no frames of the other camera in the wrong crop)
+for x in inserts:
+    for k in ('start', 'end'):
+        near = [c for c in CUTS if abs(c - x[k]) <= 0.75]
+        if near:
+            x[k] = min(near, key=lambda c: abs(c - x[k]))
 plan = json.load(open(plan_p))
 toks = json.load(open(words_p))
 T = toks['transcription']
@@ -107,25 +124,60 @@ for s, e in segs[1:]:
         merged.append([s, e])
 segs = merged
 
-# shorten long pauses inside each segment to a natural breath
+# shorten long pauses inside each segment to a short breath. From Chay's Real AF rulebook (Matt, 2026-11-25: "if any of
+# them are genuinely useful at improving what the agent already does, implement them"):
+# - pauses over 0.35 s become ~0.15 s (was 0.45 -> 0.2; Chay trims harder still, 0.22 -> 0.12);
+# - staccato: when Andy says several words in a row with a gap after each ("Earn. It. Every. Time."), the gaps stay
+#   (unless one runs over 1.5 s);
+# - no slivers: never leave a piece under 0.6 s between two trims; keep the pause instead (pauses over 1 s still go).
+PAUSE, HEAD, TAIL = 0.35, 0.09, 0.06
 final = []
 for s, e in segs:
-    i, last = int(s * 100), s
-    i_end = int(e * 100)
-    while i < i_end:
+    i0, i_end = int(s * 100), int(e * 100)
+    runs_q, i = [], i0
+    while i < i_end:  # every quiet stretch of 0.2 s or more in this piece
         if quiet[i]:
             j = i
             while j < i_end and quiet[j]:
                 j += 1
-            word_inside = any(i / 100 - 0.1 <= wt(w_, 'from') <= j / 100 + 0.05 for w_ in keep)  # never shave off a quiet word
-            if (j - i) / 100 > 0.45 and i / 100 > s + 0.05 and j / 100 < e - 0.05 and not in_insert(i / 100) and not in_insert(j / 100) \
-                    and not word_inside:
-                final.append([last, i / 100 + 0.12])
-                last = j / 100 - 0.08
+            if j - i >= 20:
+                runs_q.append((i, j))
             i = j
         else:
             i += 1
+    # Whisper often places a word's start inside a silent stretch. Rather than leave the whole pause alone, protect a
+    # window around each word start (0.1 s before, 0.08 s after) and shorten the silence on either side of it.
+    starts_ = sorted(wt(w_, 'from') for w_ in keep)
+    pieces_q = []
+    for k, (i, j) in enumerate(runs_q):
+        before = i / 100 - (runs_q[k - 1][1] / 100 if k else s)
+        after = (runs_q[k + 1][0] / 100 if k + 1 < len(runs_q) else e) - j / 100
+        stac = (j - i) / 100 <= 1.5 and before < 0.7 and after < 0.7 and 0 < k < len(runs_q) - 1  # staccato bursts
+        a_ = i / 100
+        for t in [t for t in starts_ if i / 100 - 0.1 <= t <= j / 100 + 0.05] + [None]:
+            b_ = j / 100 if t is None else t - 0.1
+            if b_ - a_ > 0:
+                pieces_q.append((a_, b_, stac))
+            if t is not None:
+                a_ = max(a_, t + 0.08)
+    last = s
+    for a_, b_, stac in pieces_q:
+        L = b_ - a_
+        if stac or L <= PAUSE or a_ <= s + 0.05 or b_ >= e - 0.05 or in_insert(a_) or in_insert(b_):
+            continue
+        if a_ + HEAD - last < 0.6 and L < 1.0:
+            continue  # would leave a sliver
+        final.append([last, a_ + HEAD])
+        last = b_ - TAIL
     final.append([last, e])
+# Chay: piece edges within 0.07 s of a show camera cut snap onto that cut, so no stray frame of the other camera
+# flashes. Only where the moved stretch is silent, so no sound is ever clipped.
+for p_ in final:
+    for c in CUTS:
+        if p_[0] < c <= p_[0] + 0.07 and all(quiet[int(p_[0] * 100):int(c * 100) + 1]):
+            p_[0] = c
+        if p_[1] - 0.07 <= c < p_[1] and all(quiet[int(c * 100):int(p_[1] * 100) + 1]):
+            p_[1] = c
 final = [[round(a_, 3), round(b_, 3)] for a_, b_ in final if b_ - a_ > 0.12]
 # hard guard: time only ever moves forward, so nothing is ever played twice
 for (a1, b1), (a2, b2) in zip(final, final[1:]):
