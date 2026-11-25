@@ -387,6 +387,11 @@ class H(BaseHTTPRequestHandler):
             return None, 'hub not configured: ' + ', '.join(missing)
         return auth.identify(self.headers)
 
+    def reauth(self, path):
+        if path.startswith('/api/') or path.startswith('/video/') or path.startswith('/sourced/'):
+            return self.send(401, {'error': 'sign in again', 'reauth': True})
+        return self.send(302, b'', 'text/plain', {'Location': f'https://{auth.TEAM}/cdn-cgi/access/logout'})
+
     def track_login(self, w):
         """New-login alerts: each new Access session is recorded; a new device or country tells Matt."""
         c = store.db()
@@ -404,9 +409,13 @@ class H(BaseHTTPRequestHandler):
     def handle_one(self, method):
         try:
             w, why = self.who()
+            path = urllib.parse.urlparse(self.path).path
+            if not w and why == 'session too old':
+                # a real person whose sign-in is older than SESSION_HOURS: send them to sign in again (Cloudflare keeps its
+                # own session alive longer, so without this they'd be stuck on "Not approved.")
+                return self.reauth(path)
             if not w:
                 return self.deny(why)
-            path = urllib.parse.urlparse(self.path).path
             if w.kind == 'worker':
                 return self.worker_route(w, method, path)
             self.track_login(w)
@@ -443,6 +452,8 @@ class H(BaseHTTPRequestHandler):
         if method == 'GET':
             if path in ('/', '/index.html'):
                 return self.send(200, open(PAGE, 'rb').read(), 'text/html; charset=utf-8')
+            if path == '/reauth':  # admin changes need a recent sign-in: sign out of the gate, then back in
+                return self.send(302, b'', 'text/plain', {'Location': f'https://{auth.TEAM}/cdn-cgi/access/logout'})
             if path == '/api/me':
                 return self.send(200, {'email': w.id, 'name': w.label(), 'role': w.role, 'owner': w.owner, 'editors': w.editors,
                                        'fresh': w.fresh(), 'actions': dv.CATALOGUE if w.can('director') else {}})

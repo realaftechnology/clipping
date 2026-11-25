@@ -206,8 +206,8 @@ let ME = null;
 const can = r => ME && ['viewer', 'reviewer', 'director', 'admin'].indexOf(ME.role) >= ['viewer', 'reviewer', 'director', 'admin'].indexOf(r);
 async function load() {
   try {
-    if (!ME) { const m = await fetch('/api/me'); if (!m.ok) { document.getElementById('ticker').textContent = 'Not approved.'; return; } ME = await m.json(); }
-    const res = await fetch('/api/overview'); if (res.status === 401 || res.status === 403) { location.reload(); return; } D = await res.json();
+    if (!ME) { const m = await fetch('/api/me'); if (m.status === 401) { location.href = '/'; return; } if (!m.ok) { document.getElementById('ticker').textContent = 'Not approved.'; return; } ME = await m.json(); }
+    const res = await fetch('/api/overview'); if (res.status === 401) { location.href = '/'; return; } if (res.status === 403) { location.reload(); return; } D = await res.json();
   } catch (e) { return; }
   topButtons();
   if (D.error) { document.getElementById('ticker').textContent = D.error; return; }
@@ -548,7 +548,7 @@ async function act(id, action, btn, kind = 'edit') {
 
 function post(url, body) {
   return fetch(url, {method: 'POST', headers: {'Content-Type': 'application/json', 'X-Hub': '1'}, body: JSON.stringify(body || {})})
-    .then(r => r.json()).then(j => { if (j.reauth) { location.href = '/cdn-cgi/access/logout'; } return j; }).catch(e => ({error: String(e)}));
+    .then(r => r.json()).then(j => { if (j.reauth) { location.href = '/reauth'; } return j; }).catch(e => ({error: String(e)}));
 }
 function send(id, action, reason = '', kind = 'edit') { return post(`/api/${kind}/${id}/${action}`, {reason}); }
 
