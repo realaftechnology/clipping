@@ -401,7 +401,7 @@ async function decide(id, action, btn, kind = 'edit') {
   btn.parentElement.querySelectorAll('button').forEach(b => b.disabled = true);
   const r = await send(id, action, '', kind);
   if (r.error) { alert(r.error); btn.parentElement.querySelectorAll('button').forEach(b => b.disabled = false); return; }
-  btn.parentElement.outerHTML = `<div class="done" style="font-size:14px;text-align:center">${action === 'approve' ? (kind === 'sourced' ? 'Approved ✓ · sent to the editors' : 'Approved ✓') : 'Rejected'}</div>`;
+  btn.parentElement.outerHTML = `<div class="done" style="font-size:14px;text-align:center">${action === 'approve' ? (kind === 'sourced' ? (D.sourcing && D.sourcing.handoff ? 'Approved ✓ · sent to the editors' : 'Approved ✓ · moved to AI Sourced Approved') : 'Approved ✓') : 'Rejected'}</div>`;
   setTimeout(() => nextClip(id, kind), 700);
 }
 
@@ -449,7 +449,7 @@ function showSourcing(tab = 'overview') {
   if (tab === 'review') return sheet(head + reviewList(queue), () => showSourcing('review'));
   const reviewed = S.supplied + S.rejected;
   sheet(head + (S.failed ? `<div class="issue"><b>Last episode failed</b> · ${esc(S.failed)}</div>` : '') + `
-    <div class="chips"><span class="chip">${S.auto_approve ? 'Auto-approve on' : 'You approve each moment'}</span><span class="chip">1–3 min · 16:9</span>${S.working ? `<span class="chip">Working on ${esc(S.working)}</span>` : ''}</div>
+    <div class="chips"><span class="chip">${S.auto_approve ? 'Auto-approve on' : 'You approve each moment'}</span><span class="chip">${S.handoff ? 'Approved → editors' : 'Approved → AI Sourced Approved (not to editors yet)'}</span><span class="chip">1–3 min · 16:9</span>${S.working ? `<span class="chip">Working on ${esc(S.working)}</span>` : ''}</div>
     <div style="color:var(--text-2);font-size:13px">Goes through every full episode and pulls out each self-contained moment of substance inside the guardrails. Approved moments go into the show's clip folder, where the editors pick them up.</div>
     <div class="nums" style="margin-top:12px"><div><b>${S.episodes_done}</b><span>episodes</span></div><div><b>${S.supplied}</b><span>supplied</span></div><div><b>${S.held}</b><span>in review</span></div>
       <div><b>${reviewed ? Math.round(100 * S.supplied / reviewed) + '%' : '–'}</b><span>approved</span></div><div><b>${S.rejected}</b><span>rejected</span></div><div><b>${S.edited}</b><span>edited</span></div></div>
@@ -471,7 +471,7 @@ async function act(id, action, btn, kind = 'edit') {
   btn.parentElement.querySelectorAll('button').forEach(b => b.disabled = true);
   const r = await send(id, action, '', kind);
   if (r.error) { alert(r.error); btn.parentElement.querySelectorAll('button').forEach(b => b.disabled = false); return; }
-  btn.parentElement.outerHTML = `<div class="done">${action === 'approve' ? (kind === 'sourced' ? 'Approved · sent to the editors' : 'Approved') : 'Rejected'}</div>`;
+  btn.parentElement.outerHTML = `<div class="done">${action === 'approve' ? (kind === 'sourced' ? (D.sourcing && D.sourcing.handoff ? 'Approved · sent to the editors' : 'Approved · moved to AI Sourced Approved') : 'Approved') : 'Rejected'}</div>`;
   setTimeout(load, 1200);
 }
 

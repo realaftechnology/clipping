@@ -16,7 +16,8 @@ the clip for distribution on the various platforms."
 Flow: download (one episode at a time; deleted afterwards) -> transcribe with word timings (whisper-cli) -> pick moments
 (headless Claude, judged against the hard exclusions, content profile, performance playbook and high performers) ->
 snap each to whole sentences and move the cut points into silence -> cut raw clips (no crop, captions or look: that is
-the editors' job) -> review folder, or straight to the editors' folder once Matt turns on auto_approve.
+the editors' job) -> review folder -> (approved) the approved folder, or the editors' show folder once Matt turns on
+handoff_to_editors. auto_approve skips the review step.
 Settings: config.json "sourcing"; the episodes folder id lives in config.local.json (episodes_folder_id).
 """
 import datetime as dt, fcntl, glob, html, json, os, re, shutil, subprocess, sys, tempfile, time, traceback
@@ -25,7 +26,8 @@ import numpy as np
 import flywheel as fw
 
 CFG, WORK = fw.CFG, fw.WORK
-S = dict({'enabled': True, 'review_folder': 'AI Sourced - Review', 'auto_approve': False,
+S = dict({'enabled': True, 'review_folder': 'AI Sourced - Review', 'approved_folder': 'AI Sourced - Review/AI Sourced Approved',
+          'handoff_to_editors': False, 'auto_approve': False,
           'max_clips': 40, 'min_seconds': 60, 'max_seconds': 180, 'since_episode': 0, 'model': None}, **CFG.get('sourcing', {}))
 EP_NAME = re.compile(r'^Ep\s*(\d+(?:\.\d+)?)\s+([A-Za-z]+)', re.I)   # "Ep 1076 QAF.mp4", "Ep 1042 CTI_SP.mp4", "Ep 1034 CTI Live.mp4"
 END = re.compile(r'[.?!]["\')\]]*$')
@@ -48,6 +50,13 @@ def db():
 
 def root():
     return os.path.expanduser(CFG['source_root'])
+
+
+def approved_dir(show):
+    """Where an approved moment goes. While Matt fine-tunes the agent it stays out of the editors' reach in the approved
+    folder (Matt, 2026-11-25: "So they don't go to the editing team yet. I want to fine tune the sourcing agent before we
+    hand it off to video editors"). With handoff_to_editors on, it goes into the show's clip folder for the editors."""
+    return os.path.join(root(), show_folder(show) if S['handoff_to_editors'] else S['approved_folder'])
 
 
 def show_folder(show):
@@ -460,7 +469,7 @@ def source(ref, title=None, repick=False):
             json.dump(picks, open(picks_p, 'w'), indent=1)
         quiet = Quiet(wav)
         theirs = natalie_spans(c, ep['episode'])
-        handoff = os.path.join(root(), show_folder(ep['show']))
+        handoff = approved_dir(ep['show'])
         dest = handoff if S['auto_approve'] else os.path.join(root(), S['review_folder'])
         os.makedirs(dest, exist_ok=True)
         ep_num = f"{ep['episode']:g}"
@@ -521,7 +530,7 @@ def source(ref, title=None, repick=False):
                        'approved' if S['auto_approve'] else 'held', time.time()))
             c.commit()
             fw.log(f"sourcing {title}: {name} {mmss(start)}-{mmss(end)} ({end - start:.0f} s, cut points "
-                   f"{quiet.level(start):.0f}/{quiet.level(end):.0f} dB vs speech) -> {'editors' if S['auto_approve'] else 'review'}")
+                   f"{quiet.level(start):.0f}/{quiet.level(end):.0f} dB vs speech) -> {('editors' if S['handoff_to_editors'] else 'approved') if S['auto_approve'] else 'review'}")
         c.execute("UPDATE episodes SET status='done', duration=?, picks=?, finished=?, note=? WHERE id=?",
                   (dur, made, time.time(), picks['passed_over'][:1000], row_id))
         c.commit()
@@ -568,8 +577,8 @@ def held():
 
 
 def review(clip_id, action, note=''):
-    """Approve hands the clip off: it moves into the show's clip folder (where the editors and Natalie's clips are), dated
-    now so it counts as fresh supply, and the approval is noted for the agent's next picks. Reject deletes the file and
+    """Approve moves the clip to the approved folder (or, once handoff_to_editors is on, into the show's clip folder where
+    the editors pick it up, dated now so it counts as fresh supply); the approval is noted for the agent's next picks. Reject deletes the file and
     keeps the reason, which the agent reads before its next picks."""
     c = db()
     r = c.execute('SELECT * FROM sourced WHERE id=?', (clip_id,)).fetchone()
@@ -577,14 +586,15 @@ def review(clip_id, action, note=''):
         sys.exit(f'clip {clip_id} is not waiting for review')
     if action == 'approve':
         ep = c.execute('SELECT show FROM episodes WHERE id=?', (r['episode_id'],)).fetchone()
-        folder = os.path.join(root(), show_folder(ep['show']))
+        folder = approved_dir(ep['show'])
+        os.makedirs(folder, exist_ok=True)
         name, k = r['name'], 2
         while os.path.exists(os.path.join(folder, name)):  # never overwrite one of Natalie's clips
             name = re.sub(r'\d*\.mp4$', f'{k}.mp4', r['name'])
             k += 1
         dest = os.path.join(folder, name)
         shutil.move(r['path'], dest)
-        os.utime(dest)  # fresh from the day it's released to the editors
+        os.utime(dest)  # dated at approval (fresh supply, once it reaches the editors)
         c.execute("UPDATE sourced SET status='approved', path=?, name=?, review_note=?, reviewed=? WHERE id=?", (dest, name, note, time.time(), clip_id))
     else:
         if not note.strip():
@@ -596,7 +606,7 @@ def review(clip_id, action, note=''):
     # learn in the background so the dashboard isn't kept waiting
     subprocess.Popen([sys.executable, os.path.abspath(__file__), 'learn'], cwd=fw.HERE, start_new_session=True, stdin=subprocess.DEVNULL,
                      stdout=open(os.path.join(os.path.dirname(fw.LOG), 'triage.out'), 'a'), stderr=subprocess.STDOUT)
-    fw.log(f"sourced clip {clip_id} {r['name']} -> " + (f"approved, handed to the editors in {os.path.relpath(dest, root())}" if action == 'approve' else 'rejected')
+    fw.log(f"sourced clip {clip_id} {r['name']} -> " + (f"approved -> {os.path.relpath(dest, root())}" if action == 'approve' else 'rejected')
            + (f': {note}' if note else ''))
 
 

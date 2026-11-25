@@ -125,7 +125,7 @@ def sourcing(c):
             for r in c.execute("SELECT s.*, e.title FROM sourced s JOIN episodes e ON e.id=s.episode_id WHERE s.status='held' "
                                "ORDER BY s.episode_id DESC, s.confidence DESC, s.id")]
     used = c.execute("SELECT COUNT(DISTINCT e.raw_id) FROM edits e JOIN raw_clips r ON r.id=e.raw_id JOIN sourced s ON s.path=r.path").fetchone()[0]
-    return {'x': x_chain(c), 'auto_approve': src.S['auto_approve'], 'enabled': src.S['enabled'] and bool(fw.CFG.get('episodes_folder_id')),
+    return {'x': x_chain(c), 'auto_approve': src.S['auto_approve'], 'handoff': src.S['handoff_to_editors'], 'enabled': src.S['enabled'] and bool(fw.CFG.get('episodes_folder_id')),
             'episodes_done': c.execute("SELECT COUNT(*) FROM episodes WHERE status='done'").fetchone()[0],
             'working': next((e['title'] for e in eps if e['status'] == 'processing' and time.time() - (e['started'] or 0) < 3 * 3600), None),
             'failed': next((f"{e['title']}: {e['note']}" for e in eps if e['status'] == 'failed'), None),
